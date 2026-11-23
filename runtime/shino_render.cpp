@@ -6,6 +6,7 @@
 // handler 0x442fb0 flips and resumes it), decrements counters (0x42), calls functions (0x4f), jumps (0x7f). There is no
 // DMAC, VIF or GIF: both handlers are answered here. The list is drained in one go; every transfer's packets go to the
 // GS translator (shino_gs.cpp) as they are reached, and the flip publishes the frame. docs/RECOMP_NOTES.md.
+#include "shino_gs.h"
 #include "shino_port.h"
 #include "bozo/ee/dispatcher.h"
 #include "bozo/libs/libraries.h"
@@ -18,6 +19,8 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace shino
 {
@@ -84,6 +87,64 @@ namespace shino
             vif::codes(data, bytes, tagWords);
         }
 
+        // PATH3 held behind MSKPATH3 (op 0x21): the GIF chain's pieces, sent on as VIF1 unmasks PATH3. The game ends
+        // each texture group (palette, image, TEXFLUSH) with an EOP packet and puts an unmask before the draws that use
+        // it (FLUSHA, MSKPATH3 0, MSKPATH3 1): each unmask lets one group through, as the GIF finishes the packet
+        // group it started before the mask takes. The pieces are the chain's RAM, valid while the list op runs.
+        struct Held
+        {
+            std::vector<std::pair<const uint8_t *, uint32_t>> pieces;
+            size_t piece = 0;
+            uint32_t at = 0, left = 0; // the bytes into the piece; the quadwords of the current tag's data
+            bool eop = false;          // the current tag ends the group
+            uint64_t groups = 0, unmasks = 0;
+        } g_held;
+
+        // Sends the held packets on to the next EOP group's end (all of them with `all`).
+        void sendHeld(bool all)
+        {
+            Held &h = g_held;
+            while (h.piece < h.pieces.size())
+            {
+                const auto [p, n] = h.pieces[h.piece];
+                if (h.at + 16 > n)
+                {
+                    ++h.piece;
+                    h.at = 0;
+                    continue;
+                }
+                const uint8_t *q = p + h.at;
+                bool ended = false;
+                if (h.left == 0)
+                {
+                    uint64_t lo;
+                    std::memcpy(&lo, q, 8);
+                    const uint32_t loops = lo & 0x7FFFu, flg = (lo >> 58) & 3u, nreg = (lo >> 60) ? uint32_t(lo >> 60) : 16u;
+                    h.left = flg == 0 ? loops * nreg : flg == 1 ? (loops * nreg + 1) / 2 : loops;
+                    h.eop = (lo >> 15) & 1u;
+                    ended = h.left == 0 && h.eop;
+                }
+                else
+                    ended = --h.left == 0 && h.eop;
+                gifData(q, 16);
+                h.at += 16;
+                if (ended)
+                {
+                    ++h.groups;
+                    if (!all)
+                        return;
+                }
+            }
+        }
+        void holdChain(uint32_t tadr)
+        {
+            sendHeld(true); // anything a chain before left (none when every group had its unmask)
+            g_held.pieces.clear();
+            g_held.piece = 0;
+            g_held.at = g_held.left = 0;
+            walkChain(tadr, false, [](const uint8_t *p, uint32_t n, bool) { if (n) g_held.pieces.emplace_back(p, n); });
+        }
+
         // One transfer of the list: word0 bits 8-9 chain (with 0x1000 TTE for VIF1), else normal with QWC in 12-27.
         void transfer(bool vif1, uint32_t word0, uint32_t address)
         {
@@ -119,8 +180,30 @@ namespace shino
                 case 0x01: transfer(true, w0, w1); break;
                 case 0x02: transfer(false, w0, w1); break;
                 case 0x21: // GIF chain (its tag at +0xc) and VIF1 chain (+4, with TTE) together, PATH3 masked first
-                    walkChain(rd32(at + 0xC), false, [](const uint8_t *p, uint32_t n, bool) { gifData(p, n); });
+                    if (static const char *t = std::getenv("SHINO_TRACE_PATH3"); t && gs::flips() == static_cast<uint64_t>(std::atoll(t)))
+                    {
+                        std::printf("[shino:path3] chain %08x with vif1 %08x\n", rd32(at + 0xC), w1);
+                        walkChain(rd32(at + 0xC), false, [](const uint8_t *p, uint32_t n, bool) {
+                            static uint32_t skip = 0; // a tag's data left from the chunk before
+                            std::printf("[shino:path3]  dma %u qw\n", n / 16);
+                            const uint32_t skipped = skip < n / 16 ? skip : n / 16;
+                            skip -= skipped;
+                            for (uint32_t k = skipped * 16; k + 16 <= n;)
+                            {
+                                uint64_t lo;
+                                std::memcpy(&lo, p + k, 8);
+                                const uint32_t loops = lo & 0x7FFFu, flg = (lo >> 58) & 3u, nreg = (lo >> 60) ? uint32_t(lo >> 60) : 16u;
+                                const uint32_t q = flg == 0 ? loops * nreg : flg == 1 ? (loops * nreg + 1) / 2 : loops;
+                                std::printf("[shino:path3]   gif tag nloop=%u flg=%u eop=%u qw=%u\n", loops, flg, unsigned((lo >> 15) & 1u), q);
+                                k += 16 + q * 16;
+                                if (k > n)
+                                    skip = (k - n) / 16;
+                            }
+                        });
+                    }
+                    holdChain(rd32(at + 0xC));
                     walkChain(w1, true, [](const uint8_t *p, uint32_t n, bool t) { vifData(p, n, t); }); // CHCR 0x145: TTE
+                    sendHeld(true); // what no unmask let through goes before the list's next transfer
                     g_counts.transfers += 2;
                     next = at + 16;
                     break;
@@ -298,8 +381,16 @@ namespace shino
         walkChain(tadr, true, [rt](const uint8_t *p, uint32_t n, bool) { vif::codes0(rt, p, n); });
     }
 
+    void path3::unmasked()
+    {
+        ++g_held.unmasks;
+        sendHeld(false);
+    }
+
     void reportRender()
     {
+        std::printf("[shino:path3] unmasks=%llu groups=%llu\n",(unsigned long long)g_held.unmasks,
+                    (unsigned long long)g_held.groups);
         std::printf("[shino:render] movie_frames=%llu flips=%llu transfers=%llu gif_qw=%llu vif_words=%llu calls=%llu\n",
                     (unsigned long long)g_movieFrames, (unsigned long long)g_counts.flips, (unsigned long long)g_counts.transfers,
                     (unsigned long long)g_counts.gifQw, (unsigned long long)g_counts.vifWords,

@@ -678,7 +678,11 @@ namespace shino
                 for (uint32_t at = 0; !g_cur->vu0 && at + 16 <= f.need; at += 16)
                     gs::directQuadword(data + at);
                 break;
-            default: break; // NOP, MSKPATH3, MARK, FLUSHE, FLUSH, FLUSHA
+            case 0x06: // MSKPATH3: an unmask lets the GIF chain's next packet group through (path3::unmasked)
+                if (!g_cur->vu0 && !(imm & 0x8000u))
+                    path3::unmasked();
+                break;
+            default: break; // NOP, MARK, FLUSHE, FLUSH, FLUSHA
             }
         }
 

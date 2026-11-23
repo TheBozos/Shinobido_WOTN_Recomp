@@ -31,6 +31,13 @@ namespace shino
         void report();
     }
 
+    // PATH3 held behind VIF1's MSKPATH3 (runtime/shino_render.cpp): the GIF chain sent with a VIF1 chain goes to the
+    // GS one EOP packet group at each unmask, between the draws, as the GIF lets it through.
+    namespace path3
+    {
+        void unmasked();
+    }
+
     // VIF1 codes and the VU1 (runtime/shino_vu1.cpp): DIRECT / DIRECTHL go to the GS translator, UNPACK and MPG fill
     // the VU1's memories, MSCAL runs its programs (their XGKICKs go to the GS translator).
     namespace vif

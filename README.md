@@ -32,7 +32,8 @@ Entertainment Europe presents" and the memory card check to the title screen. Ev
 game's own data:
 - the game's render scheduler is replaced natively;
 - its VU1 microprograms (its 2D and 3D both run through them) and the 3D's VU0 microprograms are executed by the port;
-- the GS packets they send become native draws, with the textures decoded from the game's own uploads.
+- the GS packets they send become native draws with the GS's depth test, the textures decoded from the game's own
+  uploads in the order the game interleaves them with its draws.
 
 The sound modules (Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE) are statically compiled, and the title plays
 its music.
@@ -41,8 +42,7 @@ its music.
 audio fed through the game's own player to the IOP. The game runs at the PAL rate, 50 frames a second.
 
 In progress:
-- **3D drawing**: some surfaces show the wrong texture (bright stripes, flat colours), and gameplay runs at about 20 to
-  25 frames a second instead of 50.
+- **Speed in play**: gameplay runs at about 20 to 25 frames a second instead of 50.
 - **Sound in play**: sound effects and voices are not checked yet.
 
 [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has every boot step, how the drawing works and what is next.
@@ -58,7 +58,7 @@ In progress:
 | ![The main menu](docs/screenshots/2026-11-23-main-menu.png) | ![The opening cutscene](docs/screenshots/2026-11-23-opening-cutscene.png) |
 | The main menu ("New Game", on fresh memory cards) | The opening in-engine cutscene at Utakata Castle |
 | ![Gameplay at the castle](docs/screenshots/2026-11-23-gameplay-castle.png) | |
-| Gameplay: the ninja in the castle grounds, with his HUD (some textures still wrong) | |
+| Gameplay: the ninja in the castle grounds, with his HUD | |
 
 ## Goal
 

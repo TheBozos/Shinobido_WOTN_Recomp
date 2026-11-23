@@ -334,8 +334,11 @@ namespace shino::gs
         {
             Material m;
             m.textured = (attrs >> 4) & 1u;
-            m.depthTest = false;
-            m.depthWrite = false;
+            // TEST's ZTE / ZTST (GEQUAL, GREATER; ALWAYS no test; NEVER is not drawn, emit), ZBUF's ZMSK.
+            const uint32_t ztst = ((c.test >> 16) & 1u) ? uint32_t(c.test >> 17) & 3u : 1u;
+            m.depthTest = ztst >= 2;
+            m.depthGreater = ztst == 3;
+            m.depthWrite = !((c.zbuf >> 32) & 1u);
             m.tex0 = c.tex0;
             m.alphaBlend = (attrs >> 6) & 1u;
             m.blend = m.alphaBlend ? bozo::render::blendOf(c.alpha) : Material::Blend::Opaque; // PRIM.ABE off: no blending
@@ -370,7 +373,7 @@ namespace shino::gs
                 Vertex r;
                 r.x = g.x;
                 r.y = g.y;
-                r.z = 0;
+                r.z = float(g.z); // GS Z, larger nearer (Screen::depthMax from ZBUF's format)
                 r.rgba = colour;
                 if (fst)
                 {
@@ -424,13 +427,68 @@ namespace shino::gs
                             v[count > 1 ? 1 : 0].u, v[count > 1 ? 1 : 0].v, v[count > 1 ? 1 : 0].q, v[count > 2 ? 2 : 0].u,
                             v[count > 2 ? 2 : 0].v, v[count > 2 ? 2 : 0].q, out[0].u, out[0].v, out[out.size() > 2 ? 2 : 0].u,
                             out[out.size() > 2 ? 2 : 0].v);
+            // SHINO_PICK=<flip>,<x>,<y>[,<x>,<y>...]: every triangle over those window pixels, in drawing order.
+            if (static const char *pick = std::getenv("SHINO_PICK"); pick && g_flips == std::strtoull(pick, nullptr, 10))
+                for (const char *at = std::strchr(pick, ','); at;)
+                {
+                    float px = std::strtof(at + 1, nullptr);
+                    at = std::strchr(at + 1, ',');
+                    if (!at)
+                        break;
+                    float py = std::strtof(at + 1, nullptr);
+                    at = std::strchr(at + 1, ',');
+                    for (size_t i = 0; i + 2 < out.size(); i += 3)
+                    {
+                        const Vertex &a = out[i], &b = out[i + 1], &d = out[i + 2];
+                        auto side = [&](const Vertex &p, const Vertex &q) { return (q.x - p.x) * (py - p.y) - (q.y - p.y) * (px - p.x); };
+                        const float s0 = side(a, b), s1 = side(b, d), s2 = side(d, a);
+                        if (!((s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0)))
+                            continue;
+                        std::printf("[shino:pick] at=%.0f,%.0f type=%u tex=%d tex0=%llx tex1=%llx clamp=%llx abe=%d alpha=%llx test=%llx fst=%d %ux%u "
+                                    "xy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) uvq=(%.3f %.3f %.4f)(%.3f %.3f %.4f)(%.3f %.3f %.4f) rgba=%08x z=%u\n",
+                                    px, py, type, int(textured), (unsigned long long)c.tex0, (unsigned long long)c.tex1,
+                                    (unsigned long long)c.clamp, int((attrs >> 6) & 1u), (unsigned long long)c.alpha,
+                                    (unsigned long long)c.test, int(fst), tex ? tex->width : 0, tex ? tex->height : 0, a.x, a.y,
+                                    b.x, b.y, d.x, d.y, a.u, a.v, a.q, b.u, b.v, b.q, d.u, d.v, d.q, a.rgba, v[0].z);
+                    }
+            }
             const uint32_t fbp = c.frame & 0x1FFu;
             auto &list = g_frameDraws[fbp];
+            auto append = [&](const Material &m) {
+                if (!list.empty() && list.back().texture == tex && std::memcmp(&list.back().material, &m, sizeof(Material)) == 0)
+                    list.back().vertices.insert(list.back().vertices.end(), out.begin(), out.end());
+                else
+                    list.push_back(Batch{m, tex, out});
+            };
+            if (((c.test >> 16) & 1u) && ((c.test >> 17) & 3u) == 0u)
+                return; // ZTST NEVER
             Material m = material(c, attrs);
-            if (!list.empty() && list.back().texture == tex && std::memcmp(&list.back().material, &m, sizeof(Material)) == 0)
-                list.back().vertices.insert(list.back().vertices.end(), out.begin(), out.end());
+            // The alpha test's failing pixels (TEST.AFAIL): KEEP drops them; FB_ONLY still writes their colour (not Z),
+            // ZB_ONLY their Z (not the colour), RGB_ONLY their RGB: a second pass with the opposite test.
+            const uint32_t afail = (c.test >> 12) & 3u;
+            if (!m.alphaTest || afail == 0u || m.alphaFunc == Material::AlphaFunc::Always)
+            {
+                append(m);
+                return;
+            }
+            using F = Material::AlphaFunc;
+            static const F opposite[8] = {F::Always, F::Never, F::GreaterEqual, F::Greater, F::NotEqual, F::Less, F::LessEqual, F::Equal};
+            Material fail = m;
+            fail.alphaFunc = opposite[static_cast<uint32_t>(m.alphaFunc)];
+            if (fail.alphaFunc == F::Always)
+                fail.alphaTest = false;
+            if (afail == 1u)
+                fail.depthWrite = false;
+            else if (afail == 2u)
+                fail.colourMask = 0;
             else
-                list.push_back(Batch{m, tex, std::move(out)});
+            {
+                fail.colourMask = 0x7u;
+                fail.depthWrite = false;
+            }
+            if (m.alphaFunc != F::Never)
+                append(m);
+            append(fail);
         }
 
         void vertexKick(uint64_t xyz, uint32_t z, uint32_t fog, bool draw)
@@ -640,12 +698,18 @@ namespace shino::gs
         const uint32_t magh = ((display >> 23) & 0xFu) + 1u, dw = ((display >> 32) & 0xFFFu) + 1u, dh = ((display >> 44) & 0x7FFu) + 1u;
         screen.width = display ? float(dw / magh) : 512.0f;
         screen.height = display ? float(dh) : 512.0f;
+        // The Z buffer's range from ZBUF's PSMZ: Z32, Z24, Z16 / Z16S.
+        const uint32_t psmz = (g_s.ctx[0].zbuf >> 24) & 0xFu;
+        screen.depthMax = psmz == 0u ? 4294967295.0f : psmz == 1u ? 16777215.0f : 65535.0f;
         renderer.beginFrame(screen);
         uint64_t shown = 0;
+        // The frame's draws in submission order through the 3D path: the GS's depth test (TEST, ZBUF) on GS Z, the
+        // vertices window pixels already (an identity matrix).
+        static const float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
         if (auto it = g_frameDraws.find(fbp); it != g_frameDraws.end())
             for (const Batch &b : it->second)
             {
-                renderer.drawOverlay(b.material, b.vertices.data(), static_cast<uint32_t>(b.vertices.size()), b.texture);
+                renderer.draw(b.material, kIdentity, b.vertices.data(), static_cast<uint32_t>(b.vertices.size()), b.texture);
                 shown += b.vertices.size() / 3;
             }
         if (std::getenv("SHINO_TEST_QUAD")) // presentation check: a red quad over the frame

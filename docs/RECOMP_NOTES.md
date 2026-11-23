@@ -115,8 +115,8 @@ MPG and feeds with UNPACK: `runtime/shino_vu1.cpp` reads the VIF1 stream (STCYCL
 TOPS double buffer) and runs the programs (pair semantics: the lower reads before the upper commits; Q's latency; the
 MAC flags 4 pairs late; branch delay slots; the E bit; vf0 the constant (0, 0, 0, 1)). XGKICK's packets (PATH1),
 DIRECT's (PATH2) and the GIF channel's (PATH3) go to `runtime/shino_gs.cpp` / `shino_gs_state.cpp`: the GS registers
-are kept, primitives become `Renderer::drawOverlay` triangles in window pixels (each vertex less its context's
-XYOFFSET), and the textures are decoded from a copy of the GS local memory the image transfers fill (the GS's block and
+are kept, primitives become `Renderer::draw` triangles in window pixels (each vertex less its context's XYOFFSET, an
+identity matrix), and the textures are decoded from a copy of the GS local memory the image transfers fill (the GS's block and
 column arrangements, checked as permutations at start-up). Only the draws into the displayed frame buffer are shown.
 
 This is a bring-up path, not the house style: the other ports answer the game's own draw functions natively with
@@ -125,7 +125,11 @@ data converted offline. It gets the menus on screen and gives a reference pictur
 Debug switches: `SHINO_TRACE_LIST` (the command list), `SHINO_TRACE_FLIP`, `SHINO_DUMP_PRIMS=<flip>`,
 `SHINO_DUMP_KICKS=<flip>`, `SHINO_TRACE_PATH1=<flip>`, `SHINO_TRACE_VIF=<flip>`, `SHINO_TRACE_KICK=<flip>`,
 `SHINO_DUMP_MICRO=<flip>` (VU1 memories at each program start, for `tools/shino_vu1_disasm.py`),
-`SHINO_TRACE_PROGRAM=<flip>:<n>` (one program stepped pair by pair), `SHINO_TRACE_DRAWS`, `SHINO_TEST_QUAD`.
+`SHINO_TRACE_PROGRAM=<flip>:<n>` (one program stepped pair by pair), `SHINO_TRACE_DRAWS`, `SHINO_TEST_QUAD`,
+`SHINO_TRACE_PATH3=<flip>` (the GIF chains held behind MSKPATH3: DMA pieces and GIF tags),
+`SHINO_PICK=<flip>,<x>,<y>[,<x>,<y>...]` (every triangle over those window pixels, in drawing order: texture, TEST,
+UVQ, Z), `SHINO_DUMP_TEXTURES=<flip>` (each texture decoded from that flip on as `build/tex/<tex0>_<w>x<h>.rgba`).
+Hidden runs: `--hidden --mute` (offscreen, no sound).
 Screenshots: `PS2X_CAPTURE_SCENE=1 PS2X_SCREENSHOT_AT=<s>,... PS2X_SCREENSHOT_DIR=<dir>` (the offscreen picture: the
 back buffer reads black when the window is not visible).
 
@@ -197,10 +201,28 @@ quadwords, VF registers after), `SHINO_DUMP_MICRO=<flip>[:<first>]` (from the fl
 index in it, for `SHINO_TRACE_PROGRAM`. Pad scripts drive the runs: `--pad-script FILE`, entries
 `<frame>:<BUTTON>/<frames held>` (`1000:CROSS/6` picks "New Game" on the title; START skips a cutscene).
 
+## 3D textures and depth
+
+Three things made the 3D's surfaces wrong (flat colours, green walls, rainbow stripes, streaks):
+- **PATH3 order.** The textures go through the GIF channel (PATH3) in the same list op as the VIF1 chain that draws
+  with them (`0x21`). The GIF chain holds one EOP packet group per texture (palette, image, TEXFLUSH); the VIF1 chain
+  lets each through just before the draws that use it with FLUSHA, MSKPATH3 0, MSKPATH3 1 (143 groups, 144 unmasks a
+  frame at the castle). Sent whole before the VIF1 chain, the textures sharing the streaming area (TBP `0x2800`)
+  overwrote one another before anything was drawn. `runtime/shino_render.cpp` now holds the GIF chain and sends one
+  group at each unmask (`path3::unmasked`, from VIF1's MSKPATH3); what is left goes after the VIF1 chain.
+- **Depth.** The 3D tests GEQUAL on a Z buffer (TEST `0x5140b`): up to 256 triangles cover one floor pixel, buildings
+  behind it included. The draws now go through `Renderer::draw` in submission order with GS Z per vertex, TEST's
+  ZTE / ZTST (ALWAYS no test, NEVER not drawn), ZBUF's ZMSK for the write and its PSMZ for `Screen::depthMax`.
+- **The alpha test's failing pixels.** TEST's AFAIL is FB_ONLY: a texel below AREF 0x40 is still drawn, without its Z.
+  Such a batch is two passes: the test as given, then the opposite test without the Z write (ZB_ONLY: Z and no colour;
+  RGB_ONLY: no alpha, no Z).
+- **Perspective.** STQ draws hand the GS's Q to the renderer (`Material::useQ`), S / Q and T / Q interpolated in
+  perspective as the GS does.
+
 ## Next
 
-- 3D drawing: the wrong textures on some surfaces (bright stripes, flat colours) and the frame rate in play (about 20
-  to 25 frames a second); then native draws at the game's model functions.
+- 3D: the frame rate in play (about 20 to 25 frames a second); scissor, FBMSK and the offscreen draws
+  (render-to-texture) are not drawn; then native draws at the game's model functions.
 - Sound: the sound effects and voices in play; the Acquire logo's short sting is silent.
 
 ## PAL pacing

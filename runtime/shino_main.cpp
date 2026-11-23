@@ -26,6 +26,7 @@ int main(int argc, char **argv)
     bozo::host::FreeOptions options;
     options.framePeriodCycles = 294912000 / 50; // PAL (VMODE = PAL in SYSTEM.CNF)
     bool window = false;
+    bool mute = false; // --mute: no sound through the speakers (hidden runs, tests, captures)
 #ifdef SHINO_WITH_WINDOW
     window = true;
     bozo::app::setIdentity({"Shinobido: Way of the Ninja", "Shinobido_WOTN_Recomp", "shinobido-recomp", "SCES_539.31"});
@@ -66,6 +67,8 @@ int main(int argc, char **argv)
             window = false;
         else if (a == "--profile-io")
             options.profileIo = true;
+        else if (a == "--mute")
+            mute = true;
         else if (a == "--quiet")
             options.printGameOutput = false;
         else if (a == "--dump-ram" && i + 1 < argc)
@@ -88,7 +91,7 @@ int main(int argc, char **argv)
         {
             std::fprintf(stderr, "Usage: shinobido [--frames N] [--headless] [--elf FILE] [--iso FILE] [--symbols FILE]\n"
                                  "                 [--card-dir DIR] [--pad-script FILE] [--wav FILE] [--out FILE]\n"
-                                 "                 [--profile-io] [--quiet]\n"
+                                 "                 [--profile-io] [--quiet] [--mute]\n"
                                  "                 [--dump-ram FILE] [--load-state FILE] [--save-state FILE --save-state-at N]\n"
                                  "                 [--fullscreen] [--no-vsync] [--hidden]\n");
             return a == "--help" ? 0 : 2;
@@ -144,14 +147,14 @@ int main(int argc, char **argv)
         if (recording.isOpen())
             recording.write(pcm, count);
 #ifdef SHINO_WITH_WINDOW
-        if (window)
+        if (window && !mute)
             audio.push(pcm, count);
 #endif
     };
     auto run = [&]()
     {
 #ifdef SHINO_WITH_WINDOW
-        if (window)
+        if (window && !mute)
             audio.open();
 #endif
         uint64_t frames = 0;
