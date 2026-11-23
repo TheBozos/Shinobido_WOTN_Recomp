@@ -35,9 +35,10 @@ Everything on screen is drawn from the game's own data:
 The sound modules (Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE) are statically compiled, and the title plays
 its music.
 
+**The movies play with their sound** (the Acquire logo and the intro before the title): decoded natively, their
+audio fed through the game's own player to the IOP. The game runs at the PAL rate, 50 frames a second.
+
 In progress:
-- **Movies** (the Acquire logo, the intro, the story films) decode natively, but their audio pre-buffer never fills,
-  so they are skipped for now.
 - **3D** (the game itself after "New Game") is not reached yet.
 
 [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has every boot step, how the drawing works and what is next.
@@ -48,6 +49,8 @@ In progress:
 |---|---|
 | ![Sony Computer Entertainment Europe presents](docs/screenshots/2026-11-23-scee-presents.png) | ![The title's logo](docs/screenshots/2026-11-23-title-logo.png) |
 | The boot's first screen, drawn by the game's VU1 text program | The title: its logo and background, from the game's own textures |
+| ![The intro movie](docs/screenshots/2026-11-23-intro-movie.png) | ![The intro movie, the rooftops](docs/screenshots/2026-11-23-intro-movie-rooftops.png) |
+| The intro movie, decoded natively | The intro movie: the rooftops at night |
 | ![The main menu](docs/screenshots/2026-11-23-main-menu.png) | |
 | The main menu ("New Game", on fresh memory cards) | |
 

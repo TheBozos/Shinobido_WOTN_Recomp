@@ -97,6 +97,13 @@ int main(int argc, char **argv)
     bozo::host::FreeHost host(options);
     bozo::ee::Dispatcher d(host);
     shino::installAudio(host.libraries(), d.runtime().memory.ram());
+    // The movies (libmpeg native): the SDK's results, pictures as soon as decoded (the player queues them and shows
+    // them from its own vblank handler), and a read-ahead long enough for the audio the player waits for before its
+    // first picture (the first audio packet comes after 14 pictures; it wants 0x6000 bytes).
+    host.libraries().mpegOptions = {.referenceLayout = false, .paced = false, .sdkNodata = false, .picturesAhead = 32, .sdkDemux = true};
+    // A PAL disc (SYSTEM.CNF: VMODE = PAL): the game's graphics init asks for the console's own video mode (0), which
+    // is PAL's 50 fields a second here; the movie player asks for PAL explicitly.
+    host.libraries().palConsole = true;
     d.setFunctions(shino_function_table, shino_function_count, shino_resume_table, shino_resume_count);
     bozo::port::Registry registry;
     shino::install(d.runtime(), registry);
@@ -109,6 +116,8 @@ int main(int argc, char **argv)
 
     bozo::app::FramePacer pacer;
     pacer.setPaced(window);
+    if (!std::getenv("PS2X_FRAME_CAP"))
+        pacer.setCap(50); // PAL: the game ends a frame each of its 50 fields a second (the movies at 25 or 50)
     host.onFrame = [&](uint64_t f, const R5900Context *ctx)
     {
         pacer.frameEnd();

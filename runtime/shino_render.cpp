@@ -222,13 +222,15 @@ namespace shino
             g_moviePicture = std::move(t);
         }
 
-        // sceGsSwapDBuff (0x2c2b50), called only by the movie's vblank handler: the library's answer, then the movie's
-        // latest picture published over the whole screen and the frame ended.
+        // sceGsSwapDBuff (0x2c2b50), called only by the movie's vblank handler: the movie's latest picture published
+        // over the whole screen and the frame ended.
         void movieSwap(uint8_t *rdram, R5900Context *ctx, Runtime *rt)
         {
             g_ram = rdram;
             const uint32_t caller = ctx->r[31].uw[0];
-            bozo::port::callLibrary(rt, ctx, 0x2C2B50u);
+            // libgraph's swap puts the buffer's display and draw environments: nothing natively (the picture is the
+            // movie's, published below); it returns 0.
+            ctx->r[2].ud[0] = 0;
             std::shared_ptr<const bozo::render::Texture> picture;
             {
                 std::lock_guard<std::mutex> lock(g_movieMutex);
@@ -283,7 +285,8 @@ namespace shino
         renderer.setPresentsAlone(true);
         bozo::render::setMoviePictureHook(onMoviePicture);
         r.registerFunction(0x2c2b50, movieSwap);
-        r.registerFunction(0x327130, playMovie);
+        if (std::getenv("SHINO_SKIP_MOVIES")) // bring-up switch: each movie answered as a finished playback
+            r.registerFunction(0x327130, playMovie);
         r.registerFunction(0x4429d0, scheduler);
         r.registerFunction(0x442fb0, vblank);
     }

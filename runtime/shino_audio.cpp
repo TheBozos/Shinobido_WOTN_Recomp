@@ -21,6 +21,9 @@ namespace shino
     void installAudio(bozo::libs::Libraries &libraries, uint8_t *)
     {
         sound = std::make_unique<bozo::native::irx::CompiledLibraries>(libraries, kShinoAudioHeapStart);
+        // The movie sound keeps its IOP ring full by sceSdBlockTransStatus: the SPU2's transfer address, a block ahead
+        // of the sample playing (docs/RECOMP_NOTES.md, Movies).
+        sound->useBlockTransStatusAhead();
         addShinoAudioImages(*sound);
         libraries.audioProvider = [](uint64_t cycle) { return sound->advanceTo(cycle); };
         libraries.sif.transfer = [](uint32_t address, const uint8_t *bytes, uint32_t count)

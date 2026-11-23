@@ -147,14 +147,35 @@ units, PR TheBozos/BozoEngine#127); the capture now has the level and zero cross
 
 libmpeg is named (`sceMpegInit` `0x33d040`, `sceMpegCreate` `0x33c498`, `sceMpegDemuxPssRing` `0x341330`, ...) and
 decoded natively (FFmpeg); the pictures come through `bozo::render::setMoviePictureHook`, and the movie's vblank
-handler `0x326860` swaps with `sceGsSwapDBuff` (overridden: the picture published as the backdrop). The player starts
-showing pictures only once its audio pre-buffer (`0xc000` bytes) has gone to the IOP's sound buffer through
-`sceSdRemote` block transfers (`0x325ce0` / `0x325f10`); that never happens yet, so the player waits for ever.
-**For now each movie is skipped** (`0x327130` answered as a finished playback). Next: the movie's audio path, then
-remove the skip.
+handler `0x326860` swaps with `sceGsSwapDBuff` (answered by the port: the picture published as the backdrop, the
+frame ended).
+
+The sound: the player (`0x327410`, on the main thread) demuxes the PSS from its `0x50000`-byte read ring. Its PCM
+callback `0x327f30` copies each audio packet (4073 or 4059 bytes: odd sizes) into a `0xc000`-byte EE ring
+(`0x672540`), and returns 0 when that ring has no room; a thread sends it to the IOP's `0x6000`-byte sound buffer
+in 1 KiB blocks through `sceSdRemote` block transfers (`0x325ce0` / `0x325f10`), placed by the SPU2's transfer
+address (`sceSdBlockTransStatus`). The player starts showing pictures once that buffer has its first `0x6000` bytes.
+The port's settings in BozoEngine:
+- `picturesAhead = 32`: the first audio packet comes 14 pictures into the stream, so the demux reads that far ahead.
+- `sdkDemux`: each packet's callback runs before the demux goes on, and a refused sound packet stops the demux
+  before it (the next call gives it again), as the SDK's libmpeg does. Without it a refused packet was lost, and the
+  sound after an odd-sized one was read a byte off: noise, from about 28 s into the intro. The video callback's 0
+  is not waited for: the native decoder takes the video from the demux, and the game's own IPU input ring
+  (`0x6724c8`) is never drained.
+- `useBlockTransStatusAhead` (the sound host, `runtime/shino_audio.cpp`): libsd's `sceSdBlockTransStatus` reports the
+  transfer address one 1 KiB block ahead of the sample playing, as the SPU2 does: at the play position itself the
+  player's ring read as empty once full, and was overwritten.
+
+`SHINO_SKIP_MOVIES=1` answers `0x327130` as a finished playback (each movie skipped); `SHINO_TRACE_MOVIE=1` prints
+the sound feed (`0x672540`: its EE ring bytes, the IOP buffer's write position, the bytes sent) every 25 fields.
 
 ## Next
 
-- Sound: the movie audio and the movies (above); the sound effects and voices in play.
+- Sound: the sound effects and voices in play; the Acquire logo's short sting is silent.
 - "New Game": the game's 3D, through the same VU1 path first, then native draws at the game's model functions.
-- PAL pacing: the window runs the game at 60 frames a second; check the game's 50 / 60 Hz choice.
+
+## PAL pacing
+
+The game resets the GS with video mode 0 (`sceGsResetGraph`): the console's own standard. A PAL console's is PAL, so
+the port sets BozoEngine's `palConsole` (fields at 50 Hz for mode 0, as for mode 3), and the window paces the game
+at 50 frames a second (`PS2X_FRAME_CAP` overrides it).
