@@ -30,6 +30,8 @@ namespace shino
         {
             float f[4] = {0, 0, 0, 0}; // x y z w
         };
+        // A vector unit: VU1 (16 KB data, 16 KB code), or VU0 (4 KB each; its registers are the EE's COP2 state,
+        // copied in and out around a program, and its data memory is the runtime's).
         struct Vu1
         {
             Vu1() { vf[0].f[3] = 1.0f; } // vf0 is the constant (0, 0, 0, 1): writes to it are dropped
@@ -48,7 +50,12 @@ namespace shino
             uint32_t micro[4096] = {}; // 2048 pairs: lower at even, upper at odd
             uint32_t tpc = 0;          // where the last program stopped (MSCNT)
             uint64_t programs = 0, pairs = 0, kicks = 0, refused = 0;
-        } g_vu;
+            uint8_t *data = mem;       // the data memory (VU0: the runtime's)
+            uint32_t qwMask = 0x3FFu;  // its quadwords
+            uint32_t pcMask = 0x3FF8u; // the code memory's bytes (pairs of 8)
+            bool vu0 = false;
+        } g_vu, g_vu0;
+        Vu1 *g_cur = &g_vu; // the unit a program runs on
 
         uint32_t g_programStart = 0;
         bool g_traceThis = false; // SHINO_TRACE_PROGRAM=<flip>:<n>: one program instance stepped pair by pair
@@ -63,8 +70,8 @@ namespace shino
                 return -kFloatMax;
             return v;
         }
-        Vec &memVec(uint32_t qw) { return *reinterpret_cast<Vec *>(g_vu.mem + 16 * (qw & 0x3FFu)); }
-        uint32_t &memWord(uint32_t qw, int field) { return reinterpret_cast<uint32_t *>(g_vu.mem + 16 * (qw & 0x3FFu))[field]; }
+        Vec &memVec(uint32_t qw) { return *reinterpret_cast<Vec *>(g_cur->data + 16 * (qw & g_cur->qwMask)); }
+        uint32_t &memWord(uint32_t qw, int field) { return reinterpret_cast<uint32_t *>(g_cur->data + 16 * (qw & g_cur->qwMask))[field]; }
         float asF(uint32_t v) { return std::bit_cast<float>(v); }
         uint32_t asU(float v) { return std::bit_cast<uint32_t>(v); }
         int16_t s16(uint32_t v) { return static_cast<int16_t>(v); }
@@ -82,7 +89,7 @@ namespace shino
 
         void upper(uint32_t w, UpperResult &out)
         {
-            Vu1 &v = g_vu;
+            Vu1 &v = *g_cur;
             const uint32_t dest = (w >> 21) & 0xFu, ft = (w >> 16) & 31u, fs = (w >> 11) & 31u, fd = (w >> 6) & 31u;
             const uint32_t op = w & 0x3Fu, bc = w & 3u;
             const Vec &S = v.vf[fs], &T = v.vf[ft];
@@ -232,7 +239,7 @@ namespace shino
 
         void commitUpper(const UpperResult &u)
         {
-            Vu1 &v = g_vu;
+            Vu1 &v = *g_cur;
             if (u.clip)
                 v.clip = u.clipValue;
             if (!u.writes)
@@ -263,7 +270,7 @@ namespace shino
         // The lower instruction of a pair. Returns a branch target (byte address) or -1; `end` for XGKICK etc.
         int64_t lower(uint32_t w, uint32_t pc, bool &loi)
         {
-            Vu1 &v = g_vu;
+            Vu1 &v = *g_cur;
             const uint32_t dest = (w >> 21) & 0xFu, it = (w >> 16) & 31u, is = (w >> 11) & 31u, id = (w >> 6) & 31u;
             const int32_t imm11 = static_cast<int32_t>(w << 21) >> 21;
             auto setVi = [&](uint32_t r, uint32_t value) { if (r & 15u) v.vi[r & 15u] = static_cast<uint16_t>(value); };
@@ -274,7 +281,9 @@ namespace shino
                     if (has(dest, f))
                         v.vf[r].f[f] = value.f[f];
             };
-            const int64_t target = static_cast<int64_t>(pc) + 8 + static_cast<int64_t>(imm11) * 8;
+            // The branch target wraps around the code memory (Shinobido's 3D program branches back from 0x18f0 to
+            // 0x3978): negative is "no branch" to the caller, so it is taken modulo the memory's size here.
+            const int64_t target = (static_cast<int64_t>(pc) + 8 + static_cast<int64_t>(imm11) * 8) & g_cur->pcMask;
             if (loi)
                 return -1; // the lower word is I's value (LOI), not an instruction
             if (w >> 31)
@@ -346,7 +355,8 @@ namespace shino
                             std::printf("  %03x: %08x %08x %08x %08x\n", (vi(is) + q) & 0x3FFu, m[0], m[1], m[2], m[3]);
                         }
                     }
-                    gs::path1(v.mem, vi(is));
+                    if (!v.vu0)
+                        gs::path1(v.mem, vi(is));
                     return -1;
                 case 0x70: { const Vec &s = v.vf[is]; v.p = s.f[0] * s.f[0] + s.f[1] * s.f[1] + s.f[2] * s.f[2]; return -1; } // ESADD
                 case 0x71: { const Vec &s = v.vf[is]; const float d = s.f[0] * s.f[0] + s.f[1] * s.f[1] + s.f[2] * s.f[2]; v.p = d ? 1.0f / d : kFloatMax; return -1; }
@@ -424,11 +434,12 @@ namespace shino
             std::vector<uint8_t> data;  // its data so far
             uint32_t need = 0;          // bytes it needs
             std::map<uint32_t, uint64_t> counts;
-        } g_vif;
+        } g_vif, g_vif0;
+        Vif *g_cv = &g_vif; // the VIF whose codes are being read
 
         void runProgram(uint32_t pcBytes)
         {
-            Vu1 &v = g_vu;
+            Vu1 &v = *g_cur;
             g_programStart = pcBytes;
             {
                 static int count = -1;
@@ -440,19 +451,31 @@ namespace shino
                     const char *c = std::strchr(tp, ':');
                     which = c ? std::atoi(c + 1) : 0;
                 }
-                if (gs::flips() == at)
+                if (!v.vu0 && gs::flips() == at)
                     ++count;
-                g_traceThis = gs::flips() == at && count == which;
+                g_traceThis = !v.vu0 && gs::flips() == at && count == which;
             }
             ++v.programs;
+            static uint64_t flipSeen = ~0ull;
+            static int inFlip = 0; // this program's index in its flip (SHINO_TRACE_PROGRAM's <n>)
+            if (!v.vu0)
+            {
+                if (gs::flips() != flipSeen)
+                {
+                    flipSeen = gs::flips();
+                    inFlip = 0;
+                }
+                else
+                    ++inFlip;
+            }
             // TOP: the buffer the program reads; the next uses the other (BASE, BASE + OFFSET).
             v.vi[0] = 0;
-            uint32_t pc = pcBytes & 0x3FF8u;
+            uint32_t pc = pcBytes & v.pcMask;
             int64_t branch = -1;
             bool ending = false;
             for (int guard = 0; guard < 1 << 22; ++guard)
             {
-                const uint32_t lo = v.micro[(pc >> 2) & 0xFFEu], up = v.micro[((pc >> 2) & 0xFFEu) + 1];
+                const uint32_t lo = v.micro[pc >> 2], up = v.micro[(pc >> 2) + 1];
                 ++v.pairs;
                 // Q's pending result lands
                 if (v.qDelay && --v.qDelay == 0)
@@ -464,12 +487,12 @@ namespace shino
                 if ((lo >> 31) && (((lo >> 6) & 0x1Fu) << 2 | (lo & 3u)) == 0x68 && (lo & 0x3Fu) >= 0x3C)
                 {
                     const uint32_t it = (lo >> 16) & 15u;
-                    if (it) v.vi[it] = static_cast<uint16_t>(g_vif.top);
+                    if (it) v.vi[it] = static_cast<uint16_t>(g_cv->top);
                 }
                 else if ((lo >> 31) && (((lo >> 6) & 0x1Fu) << 2 | (lo & 3u)) == 0x69 && (lo & 0x3Fu) >= 0x3C)
                 {
                     const uint32_t it = (lo >> 16) & 15u;
-                    if (it) v.vi[it] = static_cast<uint16_t>(g_vif.itop);
+                    if (it) v.vi[it] = static_cast<uint16_t>(g_cv->itop);
                 }
                 const int64_t to = lower(lo, pc, loi);
                 commitUpper(u);
@@ -498,25 +521,28 @@ namespace shino
                 }
                 if (branch >= 0)
                 {
-                    pc = static_cast<uint32_t>(branch) & 0x3FF8u;
+                    pc = static_cast<uint32_t>(branch) & v.pcMask;
                     branch = -1;
                 }
                 else
-                    pc = (pc + 8) & 0x3FF8u;
+                    pc = (pc + 8) & v.pcMask;
                 if (to >= 0)
                     branch = to;
                 if (endBit)
                     ending = true;
             }
-            std::printf("[shino:vu1] program at %x did not end\n", pcBytes);
+            std::printf("[shino:%s] program at %x did not end (flip %llu, program %d of it)\n", v.vu0 ? "vu0" : "vu1", pcBytes,
+                        (unsigned long long)gs::flips(), v.vu0 ? -1 : inFlip);
         }
 
         void startProgram(uint32_t pcBytes)
         {
             if (static const char *d = std::getenv("SHINO_DUMP_MICRO"); d && gs::flips() == static_cast<uint64_t>(std::atoll(d)))
             {
-                static int n = 0;
-                if (n < 12)
+                static int n = 0, seen = -1;
+                ++seen; // SHINO_DUMP_MICRO=<flip>[:<first>]: the flip's programs from the first-th (12 at most)
+                const char *colon = std::strchr(d, ':');
+                if (n < 12 && seen >= (colon ? std::atoi(colon + 1) : 0))
                 {
                     char name[64];
                     std::snprintf(name, sizeof(name), "build/vu1_micro_%02d.bin", n);
@@ -527,7 +553,7 @@ namespace shino
                     ++n;
                 }
             }
-            Vif &f = g_vif;
+            Vif &f = *g_cv;
             f.top = f.tops;
             f.itop = f.itops;
             f.dbf = !f.dbf;
@@ -550,7 +576,7 @@ namespace shino
 
         void doUnpack(uint32_t code, const uint8_t *data)
         {
-            Vif &f = g_vif;
+            Vif &f = *g_cv;
             const uint32_t cmd = (code >> 24) & 0x7Fu, vn = (cmd >> 2) & 3u, vl = cmd & 3u, masked = (cmd >> 4) & 1u;
             const bool usn = (code >> 14) & 1u, flg = (code >> 15) & 1u;
             uint32_t num = (code >> 16) & 0xFFu;
@@ -621,7 +647,7 @@ namespace shino
 
         void execute(uint32_t code, const uint8_t *data)
         {
-            Vif &f = g_vif;
+            Vif &f = *g_cv;
             const uint32_t cmd = (code >> 24) & 0x7Fu, imm = code & 0xFFFFu;
             if (cmd >= 0x60)
             {
@@ -636,7 +662,7 @@ namespace shino
             case 0x04: f.itops = imm & 0x3FFu; break;                                       // ITOP
             case 0x05: f.mode = imm & 3u; break;                                            // STMOD
             case 0x14: case 0x15: startProgram(imm * 8u); break;                            // MSCAL, MSCALF
-            case 0x17: startProgram(g_vu.tpc); break;                                       // MSCNT
+            case 0x17: startProgram(g_cur->tpc); break;                                     // MSCNT
             case 0x20: std::memcpy(&f.mask, data, 4); break;                                // STMASK
             case 0x30: std::memcpy(f.row, data, 16); break;                                 // STROW
             case 0x31: std::memcpy(f.col, data, 16); break;                                 // STCOL
@@ -645,11 +671,11 @@ namespace shino
                 uint32_t num = (code >> 16) & 0xFFu;
                 if (!num) num = 256;
                 for (uint32_t k = 0; k < num; ++k)
-                    std::memcpy(&g_vu.micro[((imm + k) & 0x7FFu) * 2], data + 8 * k, 8);
+                    std::memcpy(&g_cur->micro[((imm + k) & (g_cur->pcMask >> 3)) * 2], data + 8 * k, 8);
                 break;
             }
-            case 0x50: case 0x51: // DIRECT, DIRECTHL
-                for (uint32_t at = 0; at + 16 <= f.need; at += 16)
+            case 0x50: case 0x51: // DIRECT, DIRECTHL (VIF1 only)
+                for (uint32_t at = 0; !g_cur->vu0 && at + 16 <= f.need; at += 16)
                     gs::directQuadword(data + at);
                 break;
             default: break; // NOP, MSKPATH3, MARK, FLUSHE, FLUSH, FLUSHA
@@ -660,7 +686,7 @@ namespace shino
         {
             const uint32_t cmd = (code >> 24) & 0x7Fu, imm = code & 0xFFFFu;
             if (cmd >= 0x60)
-                return unpackBytes(code, std::max(g_vif.cl, 1u), std::max(g_vif.wl, 1u));
+                return unpackBytes(code, std::max(g_cv->cl, 1u), std::max(g_cv->wl, 1u));
             switch (cmd)
             {
             case 0x20: return 4;
@@ -674,7 +700,7 @@ namespace shino
 
     void vif::codes(const uint8_t *data, uint32_t bytes, bool)
     {
-        Vif &f = g_vif;
+        Vif &f = *g_cv;
         for (uint32_t at = 0; at + 4 <= bytes;)
         {
             if (f.need)
@@ -714,6 +740,88 @@ namespace shino
         }
     }
 
+    void vif::codes0(Runtime *rt, const uint8_t *data, uint32_t bytes)
+    {
+        g_vu0.data = bozo_vu0_memory(rt);
+        g_vu0.qwMask = 0xFFu;
+        g_vu0.pcMask = 0xFF8u;
+        g_vu0.vu0 = true;
+        Vu1 *unit = g_cur;
+        Vif *in = g_cv;
+        g_cur = &g_vu0;
+        g_cv = &g_vif0;
+        codes(data, bytes, false);
+        g_cur = unit;
+        g_cv = in;
+    }
+
+    void vu0::run(Runtime *rt, R5900Context *ctx, uint32_t pcBytes)
+    {
+        Vu1 &v = g_vu0;
+        v.data = bozo_vu0_memory(rt);
+        v.qwMask = 0xFFu;
+        v.pcMask = 0xFF8u;
+        v.vu0 = true;
+        for (int r = 1; r < 32; ++r)
+            std::memcpy(v.vf[r].f, ctx->vu0_vf[r].f, 16);
+        std::memcpy(v.acc.f, ctx->vu0_acc.f, 16);
+        for (int r = 0; r < 16; ++r)
+            v.vi[r] = static_cast<uint16_t>(ctx->vi[r]);
+        v.q = ctx->vu0_q;
+        v.i = ctx->vu0_i;
+        v.p = ctx->vu0_p;
+        v.r = ctx->vu0_r | 0x3F800000u;
+        v.status = ctx->vu0_status;
+        v.mac = static_cast<uint16_t>(ctx->vu0_mac);
+        v.clip = ctx->vu0_clip_flags;
+        v.qDelay = 0;
+        Vu1 *unit = g_cur;
+        Vif *in = g_cv;
+        g_cur = &v;
+        g_cv = &g_vif0;
+        static long traceLeft = std::getenv("SHINO_TRACE_VU0") ? std::atol(std::getenv("SHINO_TRACE_VU0")) : 0;
+        const bool trace = traceLeft > 0;
+        if (trace)
+        {
+            --traceLeft;
+            std::printf("[shino:vu0] program %03x (ra %x) vi1-6 %x %x %x %x %x %x\n", pcBytes, ctx->r[31].uw[0], v.vi[1], v.vi[2],
+                        v.vi[3], v.vi[4], v.vi[5], v.vi[6]);
+            std::printf("  nonzero qw:");
+            for (uint32_t q = 0; q < 256; ++q)
+            {
+                const uint32_t *m = reinterpret_cast<const uint32_t *>(v.data + 16 * q);
+                if (m[0] | m[1] | m[2] | m[3])
+                    std::printf(" %02x", q);
+            }
+            std::printf("\n");
+        }
+        runProgram(pcBytes);
+        if (trace)
+            for (int r = 1; r < 12; ++r)
+                std::printf("  vf%-2d %g %g %g %g\n", r, v.vf[r].f[0], v.vf[r].f[1], v.vf[r].f[2], v.vf[r].f[3]);
+        g_cur = unit;
+        g_cv = in;
+        if (v.qDelay)
+        {
+            v.q = v.pendingQ;
+            v.qDelay = 0;
+        }
+        for (int r = 1; r < 32; ++r)
+            std::memcpy(ctx->vu0_vf[r].f, v.vf[r].f, 16);
+        std::memcpy(ctx->vu0_acc.f, v.acc.f, 16);
+        for (int r = 1; r < 16; ++r)
+            ctx->vi[r] = v.vi[r];
+        ctx->vu0_q = v.q;
+        ctx->vu0_i = v.i;
+        ctx->vu0_p = v.p;
+        ctx->vu0_r = v.r & 0x7FFFFFu;
+        ctx->vu0_status = v.status;
+        ctx->vu0_mac = v.mac;
+        ctx->vu0_clip_flags = v.clip;
+    }
+
+    uint8_t *vu0::codeMemory() { return reinterpret_cast<uint8_t *>(g_vu0.micro); }
+
     void vif::report()
     {
         std::printf("[shino:vif]");
@@ -721,5 +829,7 @@ namespace shino
             std::printf(" %02x:%llu", cmd, (unsigned long long)n);
         std::printf("\n[shino:vu1] programs=%llu pairs=%llu kicks=%llu refused=%llu\n", (unsigned long long)g_vu.programs,
                     (unsigned long long)g_vu.pairs, (unsigned long long)g_vu.kicks, (unsigned long long)g_vu.refused);
+        std::printf("[shino:vu0] programs=%llu pairs=%llu refused=%llu\n", (unsigned long long)g_vu0.programs,
+                    (unsigned long long)g_vu0.pairs, (unsigned long long)g_vu0.refused);
     }
 } // namespace shino

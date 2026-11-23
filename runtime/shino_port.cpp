@@ -33,6 +33,21 @@ namespace shino
             case 0x00444f4cu: // native site: sw a0,0x3820(at): VIF0_ERR
             case 0x00444f60u: // native site: sw a0,0x3c20(at): VIF1_ERR
                 return true;
+            // The 3D's VU0 data senders (0x1ec118, 0x21c8a0): CHCR |= TTE, then sceDmaSend(VIF0, a static chain). No
+            // VIF0: the CHCR read gives 0 and the write is dropped (libdma's native send completes the transfer), and
+            // the chain goes to the port's VU0 where the delay slot of the sceDmaSend call makes its address.
+            case 0x001ec2ccu: // native site: lw v1,0(v0): VIF0 CHCR
+            case 0x0021c8c8u: // native site: lw v1,0(v0): VIF0 CHCR
+                ctx->r[3].ud[0] = 0;
+                return true;
+            case 0x001ec2dcu: // native site: sw v1,0(v0): VIF0 CHCR
+            case 0x0021c8d8u: // native site: sw v1,0(v0): VIF0 CHCR
+                return true;
+            case 0x001ec2ecu: // native site: addiu a1,a1,0x1500: sceDmaSend's chain
+            case 0x0021c8e8u: // native site: addiu a1,a1,0x1a80: sceDmaSend's chain
+                ctx->r[5].sd[0] = static_cast<int32_t>(ctx->r[5].uw[0] + (pc == 0x001ec2ecu ? 0x1500u : 0x1a80u));
+                vif0Chain(rdram, rt, ctx->r[5].uw[0]);
+                return true;
             // 0x326860, the movie player's vblank handler: CSR.FIELD (bit 13) picks the field's half offset.
             case 0x00326880u: // native site: ld v0,0x1000(v0): CSR
                 ctx->r[2].ud[0] = (bozo::port::vblankCount(rt) & 1u) << 13;

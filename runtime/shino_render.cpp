@@ -267,6 +267,37 @@ namespace shino
         }
     } // namespace
 
+    namespace
+    {
+        // 0x231ec8 (a0 = a VIF0 DMA chain): the 3D's VU0 microcode loader. It sends the chain (TTE: its tags' VIF codes
+        // too) to VIF0 and waits for it, unless it is the chain loaded last (kept at 0x523228); 1 when it sent it. The
+        // chain's MPG and UNPACK codes go to the port's VU0 (runtime/shino_vu1.cpp) instead.
+        void loadVu0(uint8_t *rdram, R5900Context *ctx, Runtime *rt)
+        {
+            g_ram = rdram;
+            const uint32_t chain = ctx->r[4].uw[0];
+            constexpr uint32_t kLoaded = 0x523228u;
+            if (rd32(kLoaded) == chain)
+                ctx->r[2].ud[0] = 0;
+            else
+            {
+                vif0Chain(rdram, rt, chain);
+                wr32(kLoaded, chain);
+                ctx->r[2].ud[0] = 1;
+            }
+            ctx->pc = ctx->r[31].uw[0];
+        }
+
+        // The game's VCALLMS entries (each in VU0 code memory, 8 bytes a pair), run by the VU0 interpreter.
+        template <uint32_t kEntry> void vu0Program(uint8_t *, R5900Context *ctx, Runtime *rt) { vu0::run(rt, ctx, kEntry * 8u); }
+    }
+
+    void vif0Chain(uint8_t *rdram, Runtime *rt, uint32_t tadr)
+    {
+        g_ram = rdram;
+        walkChain(tadr, true, [rt](const uint8_t *p, uint32_t n, bool) { vif::codes0(rt, p, n); });
+    }
+
     void reportRender()
     {
         std::printf("[shino:render] movie_frames=%llu flips=%llu transfers=%llu gif_qw=%llu vif_words=%llu calls=%llu\n",
@@ -289,5 +320,29 @@ namespace shino
             r.registerFunction(0x327130, playMovie);
         r.registerFunction(0x4429d0, scheduler);
         r.registerFunction(0x442fb0, vblank);
+        r.registerFunction(0x231ec8, loadVu0);
+        // The EE reads VU0's code memory too: 0x1ebb30's search indexes the VU0 data arrays with the lane its last
+        // round chose, -1 when none, which reads just below them (0x11003fec), in the code memory's mirror.
+        r.vu0CodeMemory(vu0::codeMemory());
+        // Every VCALLMS in the executable (no VCALLMSR): tools/shino_vcallms.py lists them.
+        r.vu0Program(0x000 * 8, vu0Program<0x000>);
+        r.vu0Program(0x002 * 8, vu0Program<0x002>);
+        r.vu0Program(0x009 * 8, vu0Program<0x009>);
+        r.vu0Program(0x010 * 8, vu0Program<0x010>);
+        r.vu0Program(0x017 * 8, vu0Program<0x017>);
+        r.vu0Program(0x01e * 8, vu0Program<0x01e>);
+        r.vu0Program(0x025 * 8, vu0Program<0x025>);
+        r.vu0Program(0x027 * 8, vu0Program<0x027>);
+        r.vu0Program(0x033 * 8, vu0Program<0x033>);
+        r.vu0Program(0x03a * 8, vu0Program<0x03a>);
+        r.vu0Program(0x07e * 8, vu0Program<0x07e>);
+        r.vu0Program(0x096 * 8, vu0Program<0x096>);
+        r.vu0Program(0x09d * 8, vu0Program<0x09d>);
+        r.vu0Program(0x0a4 * 8, vu0Program<0x0a4>);
+        r.vu0Program(0x181 * 8, vu0Program<0x181>);
+        r.vu0Program(0x18b * 8, vu0Program<0x18b>);
+        r.vu0Program(0x1ba * 8, vu0Program<0x1ba>);
+        r.vu0Program(0x1be * 8, vu0Program<0x1be>);
+        r.vu0Program(0x1cd * 8, vu0Program<0x1cd>);
     }
 } // namespace shino

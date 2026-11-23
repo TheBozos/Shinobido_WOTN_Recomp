@@ -169,10 +169,39 @@ The port's settings in BozoEngine:
 `SHINO_SKIP_MOVIES=1` answers `0x327130` as a finished playback (each movie skipped); `SHINO_TRACE_MOVIE=1` prints
 the sound feed (`0x672540`: its EE ring bytes, the IOP buffer's write position, the bytes sent) every 25 fields.
 
+## 3D (New Game to gameplay)
+
+"New Game" plays the story movie `S110.PSS`, loads the castle and runs the opening in-engine cutscene, then gameplay.
+What it took:
+- **VU0 microprograms.** The 3D (collision, culling) calls VU0 programs with VCALLMS at 19 entries (no VCALLMSR;
+  `tools/shino_vcallms.py` lists them), from microcode the game sends to VIF0. The VU1 interpreter in
+  `runtime/shino_vu1.cpp` serves VU0 too: a second unit with VU0's 4 KB memories, its registers copied from and back to
+  the EE's COP2 state around each program, its data memory the runtime's (the EE reads and writes it at 0x11004000).
+  Each entry is registered with `Registry::vu0Program` (`runtime/shino_render.cpp`).
+- **VIF0.** The microcode loader `0x231ec8` (a VIF0 chain, TTE, skipped when it is the chain loaded last at `0x523228`)
+  is overridden: its chain's MPG and UNPACK codes go to the port's VU0. Two other senders (`0x1ec118`, `0x21c8a0`) set
+  CHCR's TTE and call `sceDmaSend(VIF0, chain)` inline: native sites drop the CHCR read and write and hand the chain
+  (`0x4f1500`, `0x4f1a80`; `tools/shino_vif0_micro.py` extracts their microcode) to the port's VU0 where the call's
+  delay slot makes its address. libdma's native send completes the transfer.
+- **VU0 code memory.** The collision search `0x1ebb30` indexes the VU0 data arrays with the lane its last round chose
+  (`0x1eadb8`), -1 when none, so it reads `0x11003fec`, just below VU0 data memory, inside the code memory's mirror.
+  The console allows it; the port gives its VU0 code memory to the host (`Registry::vu0CodeMemory`, BozoEngine #130)
+  so those reads reach it.
+- **VU branches wrap.** The 3D's VU1 program branches back from `0x18f0` to `0x3978`, past the start of code memory:
+  a branch target is taken modulo the code memory's size. Before that the program fell through and ran into the next
+  routine for 4M steps (the "did not end" messages), at under a frame a second.
+
+Debug switches: `SHINO_TRACE_VU0=<n>` (the first n VU0 programs: entry, VI registers, the data memory's nonzero
+quadwords, VF registers after), `SHINO_DUMP_MICRO=<flip>[:<first>]` (from the flip's first-th program),
+`BOZO_FAULT_REGISTERS=1` (the registers with a fault). The "did not end" message names the flip and the program's
+index in it, for `SHINO_TRACE_PROGRAM`. Pad scripts drive the runs: `--pad-script FILE`, entries
+`<frame>:<BUTTON>/<frames held>` (`1000:CROSS/6` picks "New Game" on the title; START skips a cutscene).
+
 ## Next
 
+- 3D drawing: the wrong textures on some surfaces (bright stripes, flat colours) and the frame rate in play (about 20
+  to 25 frames a second); then native draws at the game's model functions.
 - Sound: the sound effects and voices in play; the Acquire logo's short sting is silent.
-- "New Game": the game's 3D, through the same VU1 path first, then native draws at the game's model functions.
 
 ## PAL pacing
 

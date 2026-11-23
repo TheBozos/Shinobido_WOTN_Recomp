@@ -14,6 +14,8 @@ namespace shino
     void installRender(bozo::port::Registry &registry);
     // What the frames held, for the runner's report.
     void reportRender();
+    // A VIF0 source chain (TTE: its tags' VIF codes too), its codes read into the port's VU0 (vif::codes0).
+    void vif0Chain(uint8_t *rdram, Runtime *rt, uint32_t tadr);
 
     // The GS translator (runtime/shino_gs.cpp): the GIF packets of the game's transfers drawn natively.
     namespace gs
@@ -35,6 +37,16 @@ namespace shino
     {
         // tagWords: the two VIF codes of a DMA tag's upper half (TTE).
         void codes(const uint8_t *data, uint32_t bytes, bool tagWords);
+        // VIF0 codes (MPG and UNPACK to VU0's memories, MSCAL runs a VU0 program).
+        void codes0(Runtime *rt, const uint8_t *data, uint32_t bytes);
         void report();
+    }
+    // VU0 microprograms (runtime/shino_vu1.cpp's interpreter): the program at pcBytes of the code VIF0 loaded, on the
+    // EE's COP2 registers and the runtime's VU0 data memory (VCALLMS).
+    namespace vu0
+    {
+        void run(Runtime *rt, R5900Context *ctx, uint32_t pcBytes);
+        // Its 4 KB code memory (the EE's view at 0x11000000: port::Registry::vu0CodeMemory).
+        uint8_t *codeMemory();
     }
 } // namespace shino

@@ -10,7 +10,7 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 ![Platform](https://img.shields.io/badge/platform-Windows%20(Linux%20%7C%20macOS%20later)-1b8cff)
 ![Compiler](https://img.shields.io/badge/compiler-GCC%20%7C%20Clang-1b8cff)
 ![Based on](https://img.shields.io/badge/based%20on-BozoEngine-17a35b)
-![Status](https://img.shields.io/badge/status-boots%20to%20the%20main%20menu-e6a700)
+![Status](https://img.shields.io/badge/status-reaches%203D%20gameplay-e6a700)
 
 </div>
 
@@ -25,11 +25,13 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 
 ## Status
 
-**The game boots to its main menu natively (2026-11-23).** It runs at full speed in a window, from the boot through
-"Sony Computer Entertainment Europe presents" and the memory card check to the title screen and its "New Game" menu.
-Everything on screen is drawn from the game's own data:
+**The game reaches 3D gameplay natively (2026-11-23).** From "New Game" it plays the opening in-engine cutscene at
+Utakata Castle, then hands over control: the ninja walks the castle grounds with his HUD (health, the detection eye, the
+compass), the tutorial messages and the pause menu. Before that, it boots at full speed through "Sony Computer
+Entertainment Europe presents" and the memory card check to the title screen. Everything on screen is drawn from the
+game's own data:
 - the game's render scheduler is replaced natively;
-- its VU1 microprograms (all of its 2D runs through them) are executed by the port;
+- its VU1 microprograms (its 2D and 3D both run through them) and the 3D's VU0 microprograms are executed by the port;
 - the GS packets they send become native draws, with the textures decoded from the game's own uploads.
 
 The sound modules (Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE) are statically compiled, and the title plays
@@ -39,7 +41,9 @@ its music.
 audio fed through the game's own player to the IOP. The game runs at the PAL rate, 50 frames a second.
 
 In progress:
-- **3D** (the game itself after "New Game") is not reached yet.
+- **3D drawing**: some surfaces show the wrong texture (bright stripes, flat colours), and gameplay runs at about 20 to
+  25 frames a second instead of 50.
+- **Sound in play**: sound effects and voices are not checked yet.
 
 [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has every boot step, how the drawing works and what is next.
 
@@ -51,8 +55,10 @@ In progress:
 | The boot's first screen, drawn by the game's VU1 text program | The title: its logo and background, from the game's own textures |
 | ![The intro movie](docs/screenshots/2026-11-23-intro-movie.png) | ![The intro movie, the rooftops](docs/screenshots/2026-11-23-intro-movie-rooftops.png) |
 | The intro movie, decoded natively | The intro movie: the rooftops at night |
-| ![The main menu](docs/screenshots/2026-11-23-main-menu.png) | |
-| The main menu ("New Game", on fresh memory cards) | |
+| ![The main menu](docs/screenshots/2026-11-23-main-menu.png) | ![The opening cutscene](docs/screenshots/2026-11-23-opening-cutscene.png) |
+| The main menu ("New Game", on fresh memory cards) | The opening in-engine cutscene at Utakata Castle |
+| ![Gameplay at the castle](docs/screenshots/2026-11-23-gameplay-castle.png) | |
+| Gameplay: the ninja in the castle grounds, with his HUD (some textures still wrong) | |
 
 ## Goal
 
