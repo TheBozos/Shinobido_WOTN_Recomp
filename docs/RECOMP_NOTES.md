@@ -147,6 +147,20 @@ takes both in units of 8 halfwords; BozoEngine's mixer aligned the voice's start
 exact byte, so every ADPCM block decoded 15 bytes off. Fixed in BozoEngine (libsd: the transfer address in 16-byte
 units, PR TheBozos/BozoEngine#127); the capture now has the level and zero crossings of music.
 
+### In play (2026-11-24)
+
+TORAST owns RPC server `0x12345`, TORASE (the effects) `0x11111`. In play the game streams ADPCM to TORAST: command
+`0x80e0`, four 348-byte pieces a frame, which play as one stereo pair of voices (the music, and the cutscene's sound).
+It hands TORASE a 308-byte block each frame (command `0x20000000`). Effects key voices on as the ninja acts (sword,
+jump: 3 to 5 key ons every 50 frames), few while he stands or walks. In the pause menu the game freezes the stream: its
+two voices hold their last sample (a constant level in a capture, as the SPU2's would). Loud effects over the music
+clip now and then (up to about 100 samples a second).
+
+Debug switches: `SHINO_TRACE_SOUND=1` (key ons, voices playing and the peak every 50 frames), `SHINO_TRACE_RPC=1` (the
+drivers' RPC calls by service and command every 250 frames; command | 1 counts the calls whose send buffer is not all
+zeros), `SHINO_TRACE_RPC_DUMP=<frame>` with `SHINO_TRACE_RPC_SERVICE=<hex>` (16 calls' send buffers from that frame).
+`--wav FILE` records the mix in the game's own time (headless too).
+
 ## Movies
 
 libmpeg is named (`sceMpegInit` `0x33d040`, `sceMpegCreate` `0x33c498`, `sceMpegDemuxPssRing` `0x341330`, ...) and
@@ -247,7 +261,8 @@ time a flip, exclusive; `SHINO_RATE=1` the rate alone):
 - Speed: the castle's load and the cutscene's start (frames 1500 to 1900 of the New Game run) at 15 frames a second.
 - 3D: scissor, FBMSK and the offscreen draws (render-to-texture) are not drawn; then native draws at the game's model
   functions.
-- Sound: the sound effects and voices in play; the Acquire logo's short sting is silent.
+- Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
+  effects' voices, not what they sound like); the Acquire logo's short sting is silent.
 
 ## PAL pacing
 

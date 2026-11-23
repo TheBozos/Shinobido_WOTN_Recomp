@@ -139,6 +139,7 @@ int main(int argc, char **argv)
         }
         lastFrameCycles = now;
         pacer.frameEnd();
+        shino::traceSound(f);
         if (f % 60 == 0)
             std::printf("[shino] frame=%llu pc=%x cycles=%llu\n", (unsigned long long)f, ctx->pc,
                         (unsigned long long)d.now());

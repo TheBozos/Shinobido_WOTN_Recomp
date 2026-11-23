@@ -46,7 +46,8 @@ the 3D gameplay included.
 
 In progress:
 - **Loading the castle** runs at about 15 frames a second for a few seconds, before the opening cutscene.
-- **Sound in play**: sound effects and voices are not checked yet.
+- **Sound in play**: the music and the sound effects play (the effects as the ninja acts); how they sound, and the
+  cutscene's spoken lines, are still to be checked by ear.
 
 [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has every boot step, how the drawing works and what is next.
 
