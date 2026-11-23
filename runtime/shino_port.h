@@ -67,6 +67,9 @@ namespace shino
         // VIF0 codes (MPG and UNPACK to VU0's memories, MSCAL runs a VU0 program).
         void codes0(Runtime *rt, const uint8_t *data, uint32_t bytes);
         void report();
+        // VU1 instruction pairs and programs run so far (the profile's rates).
+        uint64_t vu1Pairs();
+        uint64_t vu1Programs();
     }
     // VU0 microprograms (runtime/shino_vu1.cpp's interpreter): the program at pcBytes of the code VIF0 loaded, on the
     // EE's COP2 registers and the runtime's VU0 data memory (VCALLMS).

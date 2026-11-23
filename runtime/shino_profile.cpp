@@ -56,7 +56,12 @@ namespace shino::prof
             std::printf(";");
             for (int b = 0; b < Count; ++b)
                 std::printf(" %s %.1f ms", names[b], g_seconds[b] * 1000.0 / 250.0);
-            std::printf(" (per flip)");
+            static uint64_t pairsBefore = 0, programsBefore = 0;
+            const uint64_t pairs = vif::vu1Pairs(), programs = vif::vu1Programs();
+            std::printf(" (per flip); vu1 %.2fM pairs, %.0f programs a flip", double(pairs - pairsBefore) / 250e6,
+                        double(programs - programsBefore) / 250.0);
+            pairsBefore = pairs;
+            programsBefore = programs;
             for (double &s : g_seconds)
                 s = 0;
         }

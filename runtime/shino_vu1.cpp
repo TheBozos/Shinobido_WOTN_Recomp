@@ -1193,6 +1193,9 @@ namespace shino
 
     uint8_t *vu0::codeMemory() { return reinterpret_cast<uint8_t *>(g_vu0.micro); }
 
+    uint64_t vif::vu1Pairs() { return g_vu.pairs; }
+    uint64_t vif::vu1Programs() { return g_vu.programs; }
+
     void vif::report()
     {
         std::printf("[shino:vif]");
