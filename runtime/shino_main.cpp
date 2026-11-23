@@ -81,6 +81,8 @@ int main(int argc, char **argv)
             windowOptions.vsync = false;
         else if (a == "--fullscreen")
             windowOptions.fullscreen = true;
+        else if (a == "--hidden") // no visible window: it presents offscreen (screenshots and captures still work)
+            windowOptions.hidden = true;
 #endif
         else
         {
@@ -88,7 +90,7 @@ int main(int argc, char **argv)
                                  "                 [--card-dir DIR] [--pad-script FILE] [--wav FILE] [--out FILE]\n"
                                  "                 [--profile-io] [--quiet]\n"
                                  "                 [--dump-ram FILE] [--load-state FILE] [--save-state FILE --save-state-at N]\n"
-                                 "                 [--fullscreen] [--no-vsync]\n");
+                                 "                 [--fullscreen] [--no-vsync] [--hidden]\n");
             return a == "--help" ? 0 : 2;
         }
     }

@@ -285,6 +285,17 @@ namespace shino::gs
                 }
             c.texture = t;
             c.generation = generation;
+            // SHINO_DUMP_TEXTURES=<flip>: each texture decoded from that flip on, raw RGBA as build/tex/<tex0>_<w>x<h>.rgba
+            if (static const char *d = std::getenv("SHINO_DUMP_TEXTURES"); d && gs::flips() >= static_cast<uint64_t>(std::atoll(d)))
+            {
+                char name[96];
+                std::snprintf(name, sizeof(name), "build/tex/%016llx_%ux%u.rgba", (unsigned long long)tex0, tw, th);
+                if (FILE *f = std::fopen(name, "wb"))
+                {
+                    std::fwrite(t->rgba.data(), 4, t->rgba.size(), f);
+                    std::fclose(f);
+                }
+            }
             return t;
         }
 
@@ -344,6 +355,7 @@ namespace shino::gs
             m.clampU = (c.clamp & 3u) == 1u;
             m.clampV = ((c.clamp >> 2) & 3u) == 1u;
             m.nearest = ((c.tex1 >> 5) & 1u) == 0u;
+            m.useQ = ((attrs >> 4) & 1u) && !((attrs >> 8) & 1u); // textured with STQ
             return m;
         }
 
@@ -367,9 +379,12 @@ namespace shino::gs
                 }
                 else
                 {
+                    // STQ: S / Q, T / Q at the vertex and Q for the renderer to interpolate them in perspective
+                    // (Material::useQ), as the GS does; divided and interpolated linearly, a floor's texture smears.
                     const float q = g.q != 0.0f ? g.q : 1.0f;
                     r.u = g.u / q;
                     r.v = g.v / q;
+                    r.q = q;
                 }
                 return r;
             };
@@ -403,6 +418,12 @@ namespace shino::gs
                 std::printf("[shino:prim] type=%u tex=%d fbp=%x tex0=%llx v0=(%.1f,%.1f) v1=(%.1f,%.1f) rgba=%08x abe=%d\n", type,
                             int(textured), unsigned(c.frame & 0x1FFu), (unsigned long long)c.tex0, v[0].x, v[0].y,
                             v[count > 1 ? 1 : 0].x, v[count > 1 ? 1 : 0].y, v[count - 1].rgba, int((attrs >> 6) & 1u));
+            if (static const char *dump = std::getenv("SHINO_DUMP_PRIMS"); dump && g_flips == static_cast<uint64_t>(std::atoll(dump)) && textured)
+                std::printf("[shino:uv] fst=%d tex1=%llx clamp=%llx stq0=(%g %g %g) stq1=(%g %g %g) stq2=(%g %g %g) uv0=(%.3f %.3f) uv2=(%.3f %.3f)\n",
+                            int(fst), (unsigned long long)c.tex1, (unsigned long long)c.clamp, v[0].u, v[0].v, v[0].q,
+                            v[count > 1 ? 1 : 0].u, v[count > 1 ? 1 : 0].v, v[count > 1 ? 1 : 0].q, v[count > 2 ? 2 : 0].u,
+                            v[count > 2 ? 2 : 0].v, v[count > 2 ? 2 : 0].q, out[0].u, out[0].v, out[out.size() > 2 ? 2 : 0].u,
+                            out[out.size() > 2 ? 2 : 0].v);
             const uint32_t fbp = c.frame & 0x1FFu;
             auto &list = g_frameDraws[fbp];
             Material m = material(c, attrs);
