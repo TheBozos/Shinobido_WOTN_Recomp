@@ -19,12 +19,23 @@ set(BOZO_ENGINE_DIR "${CMAKE_SOURCE_DIR}/BozoEngine" CACHE PATH "Pinned native e
 option(SHINO_WINDOW "Build the SDL3 native game window (shinobido) next to shino-headless" ON)
 set(BOZO_APP ${SHINO_WINDOW} CACHE BOOL "" FORCE)
 set(BOZO_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-set(BOZO_REQUIRE_FFMPEG OFF CACHE BOOL "The movies need native decoding (not wired up yet)")
+set(BOZO_REQUIRE_FFMPEG ON CACHE BOOL "The movies need native decoding" FORCE)
+# The movies' decoder: the minimal static FFmpeg of scripts/build_ffmpeg.sh (MPEG-2 video only), handed to BozoEngine as
+# BOZO_FFMPEG_ROOT (TLOTR_TTA_Recomp's set-up). Not built: the system's FFmpeg through pkg-config.
+set(SHINO_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/build/ffmpeg" CACHE PATH "Minimal static FFmpeg (scripts/build_ffmpeg.sh)")
+if(SHINO_FFMPEG_ROOT AND EXISTS "${SHINO_FFMPEG_ROOT}/lib/libavcodec.a")
+  set(BOZO_FFMPEG_ROOT "${SHINO_FFMPEG_ROOT}" CACHE PATH "FFmpeg folder (include/, lib/) for libmpeg's decoder" FORCE)
+  message(STATUS "Shinobido: the movies' FFmpeg from ${SHINO_FFMPEG_ROOT} (static, MPEG-2 only)")
+else()
+  set(BOZO_FFMPEG_ROOT "" CACHE PATH "FFmpeg folder (include/, lib/) for libmpeg's decoder" FORCE)
+endif()
 add_subdirectory("${BOZO_ENGINE_DIR}" BozoEngine)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(shino_elf ${SHINO_GAME_DIR}/SCES_539.31)
 set(shino_symbols ${CMAKE_SOURCE_DIR}/recomp/shino_symbols.txt)
+# Jump-table targets bozo-recomp cannot find itself (scripts/entries.sh, tools/shino_entries.py).
+set(shino_entries ${CMAKE_SOURCE_DIR}/recomp/shino_entries.txt)
 # shino_prep: the lists made before translation; shino_gen: bozo-recomp's output only (it removes any other shino_*
 # file there).
 set(shino_prep ${CMAKE_BINARY_DIR}/shino_prep)
@@ -64,8 +75,9 @@ foreach(i RANGE ${shino_last})
 endforeach()
 add_custom_command(OUTPUT ${shino_sources}
   COMMAND bozo-recomp ${shino_image} ${shino_gen} --prefix shino --files ${shino_chunks} --no-comments
-          --externals ${shino_externals} --symbols ${shino_symbols} --report ${shino_prep}/shino_report.txt
-  DEPENDS bozo-recomp ${shino_image} ${shino_externals} ${shino_symbols}
+          --externals ${shino_externals} --symbols ${shino_symbols} --entries ${shino_entries}
+          --report ${shino_prep}/shino_report.txt
+  DEPENDS bozo-recomp ${shino_image} ${shino_externals} ${shino_symbols} ${shino_entries}
   COMMENT "Recompiling SCES_539.31")
 add_custom_target(shino_generate DEPENDS ${shino_sources})
 
@@ -74,12 +86,36 @@ target_link_libraries(shino_game PUBLIC bozo_runtime_headers)
 target_include_directories(shino_game PUBLIC ${shino_gen})
 target_compile_options(shino_game PRIVATE -O1 -w -ffp-contract=off)
 
-set(shino_runtime_sources ${shino_port_sources})
+# The IOP sound modules, statically compiled from the player's disc (tools/shino_bozo_audio.py, docs/native-irx.md in
+# BozoEngine): Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE.
+set(shino_audio_gen ${CMAKE_BINARY_DIR}/shino_audio_gen)
+set(shino_audio_names LIBSD SDRDRV TORAST TORASE)
+set(shino_audio_outputs ${shino_audio_gen}/shino_audio_modules.h)
+set(shino_audio_inputs)
+set(shino_audio_code)
+foreach(module ${shino_audio_names})
+  string(TOLOWER "${module}" lower)
+  list(APPEND shino_audio_outputs ${shino_audio_gen}/${lower}_iop.cpp)
+  list(APPEND shino_audio_code ${shino_audio_gen}/${lower}_iop.cpp)
+  list(APPEND shino_audio_inputs ${SHINO_GAME_DIR}/IOP/MODULES/${module}.IRX)
+endforeach()
+add_custom_command(OUTPUT ${shino_audio_outputs}
+  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/shino_bozo_audio.py ${SHINO_GAME_DIR} ${shino_audio_gen} ${BOZO_ENGINE_DIR}
+  DEPENDS ${shino_audio_inputs} ${CMAKE_SOURCE_DIR}/tools/shino_bozo_audio.py
+          ${BOZO_ENGINE_DIR}/tools/native_irx/relocate.py ${BOZO_ENGINE_DIR}/tools/native_irx/recompile.py
+  COMMENT "Statically recompiling the IOP sound modules")
+add_custom_target(shino_native_audio DEPENDS ${shino_audio_outputs})
+add_library(shino_audio_code OBJECT ${shino_audio_code})
+target_link_libraries(shino_audio_code PRIVATE bozo_runtime_headers)
+target_compile_options(shino_audio_code PRIVATE -O1 -w)
+
+set(shino_runtime_sources ${shino_port_sources} $<TARGET_OBJECTS:shino_audio_code>)
 list(FILTER shino_runtime_sources EXCLUDE REGEX "shino_main\\.cpp$")
 
 add_executable(shino-headless runtime/shino_main.cpp ${shino_runtime_sources})
 target_link_libraries(shino-headless PRIVATE shino_game bozo_host)
-target_include_directories(shino-headless PRIVATE ${CMAKE_SOURCE_DIR}/runtime)
+target_include_directories(shino-headless PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${shino_audio_gen})
+add_dependencies(shino-headless shino_native_audio)
 target_compile_definitions(shino-headless PRIVATE SHINO_DEFAULT_ELF="${shino_image}" SHINO_DEFAULT_ISO="${SHINO_ISO}"
                                                     SHINO_SYMBOL_MAP="${shino_symbols}")
 if(MINGW)
@@ -90,7 +126,8 @@ endif()
 if(SHINO_WINDOW)
   add_executable(shinobido runtime/shino_main.cpp ${shino_runtime_sources})
   target_link_libraries(shinobido PRIVATE shino_game bozo_host bozo_app)
-  target_include_directories(shinobido PRIVATE ${CMAKE_SOURCE_DIR}/runtime)
+  target_include_directories(shinobido PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${shino_audio_gen})
+  add_dependencies(shinobido shino_native_audio)
   target_compile_definitions(shinobido PRIVATE SHINO_WITH_WINDOW SHINO_DEFAULT_ELF="${shino_image}"
                                                SHINO_DEFAULT_ISO="${SHINO_ISO}" SHINO_SYMBOL_MAP="${shino_symbols}")
   if(WIN32)

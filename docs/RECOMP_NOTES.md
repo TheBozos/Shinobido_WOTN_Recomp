@@ -72,26 +72,89 @@ Each was a stop of the headless runner (`scripts/run.sh --frames 300`), 2026-11-
    `recomp/shino_symbols_reviewed.txt`, and the runner given the symbol map: `_InitSys` is answered natively.
 2. `jump to 0x614b80: no generated code`: the C++ static constructors, outside the code section (Build, above).
    Added as a second code section by tools/shino_prepare.py; all 21 run.
-3. **Current stop**: `no code at 0xffffff` (frame 0, clock 904192) after 8 kernel calls and 358 library calls
-   (353 `memset`, 2 `memcpy`, 2 `Deci2Call`, 1 `strlen`). The two `Deci2Call`s come from libkernel's TTY / DECI2
-   wrappers (`0x2c6cc0`..`0x2c6ed0`, called from `0x2c7380`, `0x2c7138`, `0x2c6fa0`, `0x2c7478`). Main
-   (`0x100ba0`) first calls `0x100870`, then `0x100c30` (the constructors), `0x100230`, `0x100260`, `0x100290`,
-   `0x1002a0`, `0x108320`, `0x133df0`, `0x1087c0`. Next: find which call returns or jumps to `0xffffff` (a return
-   address or function pointer that reads as all ones: a native answer the game reads differently, or a table not
-   filled yet), with a temporary trace in the dispatcher.
+3. `no code at 0xffffff`: the stack. crt0 calls SetupThread with stack `-1` (the SDK's default `_stack`: "the end
+   of RAM"), size `0x30000`; the engine returned `-1 + size`, an odd stack pointer inside the program, and the first
+   return read garbage. Fixed in BozoEngine (`Kernel::threadSetup`: stack -1 is the `size` bytes below 32 MB).
+4. `syscall 120` (`sceSifSetDChain` in `sceSifInitCmd`): `sceSifInitRpc` `0x2c8fa0` named, with the IOP reset
+   (`sceSifRebootIop` `0x2cf110`, `sceSifSyncIop` `0x2cf0c0`), the module loads (`sceSifLoadModule` `0x2cebe0`,
+   `sceSifLoadStartModule` `0x2cec00`) and `sceCdMmode` `0x2d3220` (S-command 0x22).
+5. A bind loop in libcdvd: `sceCdDiskReady` `0x2d3000` (SDK 3.0's server `0x8000059c`, falling back to
+   `0x8000059a`).
+6. A bind loop on the fileio server `0x80000001`: `sceFsInit` `0x2ca868` and the fileio calls by their RPC function
+   number through SDK 3.0's call wrapper `0x2ca1d0` (open 0, close 1, read 2, write 3, lseek 4, ioctl 5, getstat
+   0xc). The game checks each file with `sceGetstat`, which BozoEngine did not answer: added to the engine's libcdvd
+   (a disc file's size; the image opened first, as sceOpen does).
+7. The game opens `cdrom0:\VOLUME.DAT;1` in a retry loop until getstat succeeds (6), then libpad's bind loop:
+   `scePadInit` `0x2d37f8` and libpad named in TMB's order (`scePadPortOpen`, `scePadRead`, `scePadGetState`, ...).
+8. `mfc0 28` in `_sceSDC`: `SyncDCache` `0x2c62d8` and `InvalidDCache` `0x2c6418`.
+9. The game's own path reset `0x4454a0` (VIF0/VIF1/GIF FBRST, the VUs' through VI28): an override returning at once.
+10. The first frame: `sceGsResetGraph` `0x2c1d28` and `sceGsSetDefDispEnv` `0x2c1fe0` named; libdma named by what
+    each function does (SDK 3.0 shares one wait helper between them): `sceDmaSend` `0x2c3e80`, `SendN`, `SendI`,
+    `Recv*`, `sceDmaSync` `0x2c4120`, `sceDmaWatch`, `sceDmaPutStallAddr`.
+11. The render scheduler (below, "Drawing") and its VIF error masks in its set-up `0x444e40` (native sites).
+12. A `switch` whose table base is loaded far from its `jr` (`0x4b5498`): bozo-recomp cannot find such tables;
+    `tools/shino_entries.py` gives the targets of every function with an unresolved jump as entries
+    (`recomp/shino_entries.txt`, `scripts/entries.sh`).
+13. `sceSdRemoteInit` binds SDRDRV's `0x80000701`: the IOP sound modules compiled natively (below, "Sound").
+14. The memory card check waits on `sceMcSync` `0x2d5f20` (with `sceMcEnd`, `sceMcMkdir`).
+15. The movies (below), then the game's delays: SDK 3.0's timer library (`TimerUSec2BusClock` `0x2d1580`,
+    `SetTimerAlarm` `0x2d1730`, `ReleaseTimerAlarm` `0x2d1950`, `DelayThread` `0x2c6a58`), answered natively by
+    BozoEngine; guest code would wait for timer interrupts that never come.
+
+Then the title screen and its menu, at full speed in the window.
+
+## Drawing (bring-up path)
+
+Shinobido builds each frame as a list of 8-byte commands its scheduler `0x4429d0` runs from the DMAC/INTC handlers
+(word0's low byte: `0x01` VIF1 transfer, `0x02` GIF, `0x21` both with MSKPATH3 (the VIF1 chain with TTE), `0x40`/`0x41`
+wait for the flip, `0x42` a counter's decrement, `0x4f` a call, `0x7f` a jump; chains or normal transfers by word0's
+bits 8-9, QWC in 12-27). `runtime/shino_render.cpp` replaces it: the list is drained in one go, each transfer's DMA
+chain walked; the vblank handler `0x442fb0` makes the flip (DISPFB1 / DISPLAY1 of the display environment, the field's
+GIF chain) and publishes the frame. Nearly everything, the 2D included, is drawn by VU1 programs the game uploads with
+MPG and feeds with UNPACK: `runtime/shino_vu1.cpp` reads the VIF1 stream (STCYCL, STMOD, STMASK, STROW/STCOL, the
+TOPS double buffer) and runs the programs (pair semantics: the lower reads before the upper commits; Q's latency; the
+MAC flags 4 pairs late; branch delay slots; the E bit; vf0 the constant (0, 0, 0, 1)). XGKICK's packets (PATH1),
+DIRECT's (PATH2) and the GIF channel's (PATH3) go to `runtime/shino_gs.cpp` / `shino_gs_state.cpp`: the GS registers
+are kept, primitives become `Renderer::drawOverlay` triangles in window pixels (each vertex less its context's
+XYOFFSET), and the textures are decoded from a copy of the GS local memory the image transfers fill (the GS's block and
+column arrangements, checked as permutations at start-up). Only the draws into the displayed frame buffer are shown.
+
+This is a bring-up path, not the house style: the other ports answer the game's own draw functions natively with
+data converted offline. It gets the menus on screen and gives a reference picture to replace it piece by piece.
+
+Debug switches: `SHINO_TRACE_LIST` (the command list), `SHINO_TRACE_FLIP`, `SHINO_DUMP_PRIMS=<flip>`,
+`SHINO_DUMP_KICKS=<flip>`, `SHINO_TRACE_PATH1=<flip>`, `SHINO_TRACE_VIF=<flip>`, `SHINO_TRACE_KICK=<flip>`,
+`SHINO_DUMP_MICRO=<flip>` (VU1 memories at each program start, for `tools/shino_vu1_disasm.py`),
+`SHINO_TRACE_PROGRAM=<flip>:<n>` (one program stepped pair by pair), `SHINO_TRACE_DRAWS`, `SHINO_TEST_QUAD`.
+Screenshots: `PS2X_CAPTURE_SCENE=1 PS2X_SCREENSHOT_AT=<s>,... PS2X_SCREENSHOT_DIR=<dir>` (the offscreen picture: the
+back buffer reads black when the window is not visible).
+
+## Sound
+
+LIBSD, SDRDRV, TORAST and TORASE are statically compiled (`tools/shino_bozo_audio.py`, BozoEngine's
+`tools/native_irx`) and run by the engine's compiled-library host (`runtime/shino_audio.cpp`); TORAST streams the
+music archives through the host's `ioman`. The pad, memory card, CD streaming and USB modules are answered at their EE
+APIs.
+
+The title's music first came out as noise (a capture: from 6.5 s a steady level, zero crossings at ~23 kHz, values
+with no structure). TORAST allocates its music buffers down from the last byte of sound memory
+(`0x1fffff - 0x28000 = 0x1d7fff`) and passes that odd address both to `sceSdVoiceTrans` and to the voice's SSA. The SPU2
+takes both in units of 8 halfwords; BozoEngine's mixer aligned the voice's start but `sceSdVoiceTrans` wrote at the
+exact byte, so every ADPCM block decoded 15 bytes off. Fixed in BozoEngine (libsd: the transfer address in 16-byte
+units, PR TheBozos/BozoEngine#127); the capture now has the level and zero crossings of music.
+
+## Movies
+
+libmpeg is named (`sceMpegInit` `0x33d040`, `sceMpegCreate` `0x33c498`, `sceMpegDemuxPssRing` `0x341330`, ...) and
+decoded natively (FFmpeg); the pictures come through `bozo::render::setMoviePictureHook`, and the movie's vblank
+handler `0x326860` swaps with `sceGsSwapDBuff` (overridden: the picture published as the backdrop). The player starts
+showing pictures only once its audio pre-buffer (`0xc000` bytes) has gone to the IOP's sound buffer through
+`sceSdRemote` block transfers (`0x325ce0` / `0x325f10`); that never happens yet, so the player waits for ever.
+**For now each movie is skipped** (`0x327130` answered as a finished playback). Next: the movie's audio path, then
+remove the skip.
 
 ## Next
 
-- Boot: the `0xffffff` stop above, then the rest of the SDK's boot (`sceSifInitRpc`, the IOP reset and module loads,
-  `sceCdInit` / `sceCdMmode`), naming each function as the runner reaches it (TTA's order: the kernel and SIF calls,
-  the CD init, the IOP reset, the sound handshake, the GS path resets, the pads).
-- Sound: Acquire's driver `TORAST.IRX` / `TORASE.IRX` (CodeWarrior IOP modules, "Ads_driver") with Sony's `LIBSD` and
-  `SDRDRV`, statically compiled with BozoEngine's `tools/native_irx` (TTA's `tools/tta_bozo_audio.py`, Onimusha's
-  `tools/oni_bozo_audio.py`); the `.TRS` archives are their data.
-- Files: `VOLUME.DAT`'s directory (the game opens `volume.dat` and reads `chara/*.bin`, `weapon/wpdata.bin`... from
-  it): how the game reads it (libcdvd streaming, `CDVDSTM.IRX`, or fileio), for the converters later.
-- Movies: the PSS files through BozoEngine's native libmpeg (`BOZO_REQUIRE_FFMPEG`, TTA's `scripts/build_ffmpeg.sh`).
-- Drawing: native hooks at the game's renderer functions, once the boot reaches its first frame (TTA's order: movies,
-  then 2D/UI, then 3D).
-- PAL: the runner paces 50 fields a second (`framePeriodCycles = 294912000 / 50`); check whether the game offers a
-  60 Hz mode at boot (many 2006 PAL releases do) before tuning the pacing.
+- Sound: the movie audio and the movies (above); the sound effects and voices in play.
+- "New Game": the game's 3D, through the same VU1 path first, then native draws at the game's model functions.
+- PAL pacing: the window runs the game at 60 frames a second; check the game's 50 / 60 Hz choice.

@@ -20,3 +20,60 @@ sceMcDelete 0x2d6620 # mcserv 0x80000400, function 0xf (tools/shino_rpc_names.py
 sceMcFlush 0x2d6740 # mcserv 0x80000400, function 0xa (tools/shino_rpc_names.py)
 sceMcUnformat 0x2d6b28 # mcserv 0x80000400, function 0x11 (tools/shino_rpc_names.py)
 sceMcGetEntSpace 0x2d6bf8 # mcserv 0x80000400, function 0x12 (tools/shino_rpc_names.py)
+sceSifInitRpc 0x2c8fa0 # calls sceSifInitCmd (0x2c8840, which calls sceSifSetDChain: syscall 120), between sceSifWriteBackDCache and sceSifExitRpc as in libsif; 16 callers, sceCdInit, sceCdSearchFile and sceMcInit among them
+sceSifRebootIop 0x2cf110 # calls sceSifInitRpc, sceSifExitRpc and sceSifResetIop in turn, right after sceSifIsAliveIop: libsif's sceSifRebootIop (TTA 0x32cef8)
+sceSifSyncIop 0x2cf0c0 # sceSifGetReg(4) & 0x40000 (SIF_REG_SMFLAG's reset-done bit), then sets the flag registers and returns 1, else 0: libsif's sceSifSyncIop
+sceSifLoadModule 0x2cebe0 # _sceSifLoadModule (0x2ce9b8) with a3 = its own stack slot (the result it drops) and t0 = 0: sceSifLoadModule(name, args_len, args); the matcher's same-shape twin is 0x2cec00
+sceSifLoadStartModule 0x2cec00 # _sceSifLoadModule (0x2ce9b8) with the caller's a3 (int *result) and t0 = 0: sceSifLoadStartModule(name, args_len, args, result), after sceSifLoadModule as in libsif
+sceCdMmode 0x2d3220 # stores its argument (the media) at 0x527980, takes the S-command lock with 0x22 (0x2d28f8) and calls the S-command server 0x80000593: libcdvd sceCdMmode (TTA 0x27dff0, S-command 0x22)
+sceCdDiskReady 0x2d3000 # binds 0x8000059c (SDK 3.0's disk-ready server), takes the mode (mode 8: non-blocking, -1 when busy) and returns 6 when not ready; falls back to 0x2d2de8, the older client of 0x8000059a (same mode and results): libcdvd sceCdDiskReady. Called by the game's CD start (0x246a80) after sceCdMmode
+sceFsInit 0x2ca868 # binds the fileio server 0x80000001 (sceSifBindRpc loop at 0x2ca8f8) after registering the SIF command handlers 0x80000011 and 0x80000013: libkernel's fileio client init; every fileio call (19 sites) calls it first
+sceOpen 0x2cad68 # fileio client: RPC function 0 (open) to 0x80000001 through the SDK 3.0 call wrapper 0x2ca1d0, after sceFsInit
+sceClose 0x2caff8 # fileio client: RPC function 1 (close) through 0x2ca1d0
+sceRead 0x2cb3b0 # fileio client: RPC function 2 (read) through 0x2ca1d0, the buffer written back with sceSifWriteBackDCache first
+sceWrite 0x2cb620 # fileio client: RPC function 3 (write) through 0x2ca1d0, copying the unaligned head into the request
+sceLseek 0x2cb170 # fileio client: RPC function 4 (lseek) through 0x2ca1d0
+sceIoctl 0x2cb8e0 # fileio client: RPC function 5 (ioctl) through 0x2ca1d0
+sceGetstat 0x2cc950 # fileio client: RPC function 0xc (getstat) through 0x2ca1d0, (name, struct sce_stat *); the game's file check 0x2464e0 calls it
+scePadInit 0x2d37f8 # binds padman's two servers, 0x80000100 and 0x80000101 (sceSifBindRpc loops at 0x2d3850 / 0x2d38a4), first of libpad in TMB's order (SCUS_971.01 keeps its symbols)
+scePadEnd 0x2d3a88 # libpad, after scePadInit's helpers and before scePadPortOpen as in TMB's order; RPC to 0x80000100 through 0x2d4dd0
+scePadPortOpen 0x2d3c50 # (port, slot, DMA buffer): keeps its three arguments, RPC to 0x80000100; right before scePadPortClose (0x2d3e38) as in TMB
+scePadGetDmaStr 0x2d3ef0 # right after scePadPortClose as in TMB's order; the helper 11 libpad functions call for the port's DMA buffer
+scePadRead 0x2d40a0 # the matcher's only candidate (same shape 0.90, with memcpy); after scePadGetFrameCount (0x2d4048), 120 bytes (TMB: 124)
+scePadGetState 0x2d4118 # after scePadRead and before scePadStateIntToStr (0x2d4190), 120 bytes as in TMB; 7 callers
+scePadSetReqState 0x2d41c8 # after scePadStateIntToStr and before scePadGetReqState (0x2d4280) as in TMB
+scePadInfoAct 0x2d4310 # after scePadReqIntToStr (0x2d42d8): InfoAct, InfoComb, InfoMode in TMB's order (280, 280, 312 bytes; TMB 288, 284, 312)
+scePadInfoComb 0x2d4428 # see scePadInfoAct
+scePadInfoMode 0x2d4540 # see scePadInfoAct; just before scePadSetMainMode (0x2d4678)
+scePadSetActDirect 0x2d4730 # between scePadSetMainMode and scePadSetActAlign (0x2d47f8) as in TMB
+scePadInfoPressMode 0x2d4a30 # between scePadSetButtonInfo (0x2d4980) and scePadEnterPressMode (0x2d4ab0) as in TMB
+SyncDCache 0x2c62d8 # the only caller of _sceSDC (0x2c6230, the cache-tag loop: mfc0 28), between it and iSyncDCache (0x2c6358) as in libkernel; 36 callers
+InvalidDCache 0x2c6418 # the only caller of _sceIDC (0x2c6370), between it and iInvalidDCache (0x2c6498) as in libkernel
+sceGsResetGraph 0x2c1d28 # writes the GS CSR (reset) at 0x2c1d9c; first of libgraph, right before sceGsGetGParam (0x2c1eb8, 16 bytes) and sceGsResetPath (0x2c1ec8) as in TMB's order; called by the game's graphics init 0x44ff70
+sceGsSetDefDispEnv 0x2c1fe0 # (disp, psm, w, h, dx, dy) as halfwords (sll/sra 16 of a1-t1), calls sceGsGetGParam (0x2c1eb8) for the mode; right before sceGsPutDispEnv (0x2c2358) as in TMB
+sceDmaPutStallAddr 0x2c3e68 # writes its argument to D_STADR (0x1000e060) and returns the old value; right after sceDmaGetEnv as in DC's libdma
+sceDmaSend 0x2c3e80 # (chan, tag): waits for the channel through 0x2c39f8, sets TADR (+0x30), QWC 0 and CHCR |= 0x105 (source chain, STR): libdma sceDmaSend (SDK 3.0's shape: the wait in a shared helper)
+sceDmaSendN 0x2c3ee8 # (chan, addr, qwc): MADR (+0x10), QWC (+0x20), CHCR |= 0x101 (normal, STR) after the shared wait 0x2c39f8
+sceDmaSendI 0x2c3f60 # (chan, addr, qwc): as sceDmaSendN with CHCR |= 0x109 (interleave)
+sceDmaRecv 0x2c3fd8 # (chan): QWC 0, CHCR direction to memory with chain mode and STR (0x104 | 0x100, DIR cleared)
+sceDmaRecvN 0x2c4020 # (chan, addr, qwc): normal receive, after sceDmaRecv as in DC's order
+sceDmaRecvI 0x2c40a0 # (chan, addr, qwc): interleaved receive (CHCR |= 8), after sceDmaRecvN
+sceDmaSync 0x2c4120 # (chan, mode, timeout): mode 1 returns CHCR.STR, else waits through 0x2c39f8 and returns 0
+sceDmaWatch 0x2c4158 # (chan, addr, mode, timeout): mode 1 returns MADR < addr, else waits through 0x2c3a68 (the MADR wait) and returns 0
+sceMpegInit 0x33d040 # called once by the movie module's set-up 0x327730 (176 bytes; TMB 168)
+sceMpegCreate 0x33c498 # the movie module's 0x329500 calls it, then sceMpegAddCallback five times (568 bytes; TMB 572)
+sceMpegDelete 0x33d0f0 # `jr ra; v0 = 1` (8 bytes, as TMB's), called by the movie module's end 0x329650
+sceMpegAddBs 0x33d0f8 # (mp, buffer, size): the size rounded to 16 (+0x13 / +0x22 >> 4 << 4), fed through 0x33c6d0; after sceMpegDelete as in TMB
+sceMpegGetPicture 0x33d138 # (mp, image, mb count): image | 0x20000000 at +0xec, count at +0xf8, RGB32 mode (+0xc4 = 1), then the decode 0x33c898 (the "sceMpegGetPicture was aborted" message's function); TMB 72 bytes
+sceMpegReset 0x33d1d8 # clears the decoder state (+0x878, +0, +4, +8, +0xc0, +0x98 = -1) and writes IPU_CTRL (0x10002010): sceMpegReset, called by the movie loop 0x3298b0 at the end
+sceMpegIsEnd 0x33d258 # returns the state's first word (the end flag); called twice per frame by the movie loop 0x3298b0
+sceMpegAddCallback 0x33d2b0 # (mp, type, function, data): stores at +0xc + type * 12 with $gp; the movie module's 0x329500 calls it five times after sceMpegCreate
+sceMpegDemuxPssRing 0x341330 # (mp, base, size, ring, ring size): the end of the ring is a3 + t0; sceMpegDemuxPss (0x341710) calls it with a3 = 0, t0 = -1 as libmpeg does; called by the movie module 0x327410
+sceMpegAddStrCallback 0x341730 # right after sceMpegDemuxPss as in TMB's libmpeg; called by the movie module's 0x329600
+sceMcSync 0x2d5f20 # (mode, int *cmd, int *result): PollSema on the library's semaphore (0x527fa8), WaitSema when mode 0; *cmd = the current function (0x527fa0, cleared when done), *result from the reply buffer, then SignalSema of the call lock: libmc sceMcSync; called after each operation (5 sites)
+sceMcEnd 0x2d56a0 # sceMcSync (0x2d5f20), then TerminateThread and DeleteThread of the library's thread: libmc sceMcEnd
+sceMcMkdir 0x2d5a08 # sceMcOpen (0x2d58e0) with a3 = 0x40 (the directory flag), the function kept as 0xb: libmc sceMcMkdir
+TimerUSec2BusClock 0x2d1580 # (sec, usec) to bus clocks: SDK 3.0's timer library; the game's delay 0x162e80 and DelayThread (0x2c6a58) call it with sec 0 before SetTimerAlarm
+SetTimerAlarm 0x2d1730 # (clocks, handler, arg): the game's delay 0x162e80 passes 0x162f80 (signals the semaphore it waits on) and the semaphore; DelayThread the same way
+ReleaseTimerAlarm 0x2d1950 # (id): the slot is id >> 8 (its record id >> 8 << 4), released; called by 0x422f78 after its SetTimerAlarm
+DelayThread 0x2c6a58 # CreateSema, TimerUSec2BusClock, SetTimerAlarm, WaitSema, DeleteSema: libkernel's DelayThread (16 callers: the fileio call wrapper 0x2ca1d0, libcdvd)

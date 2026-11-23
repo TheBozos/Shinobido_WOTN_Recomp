@@ -38,6 +38,8 @@ int main(int argc, char **argv)
     options.iso = SHINO_DEFAULT_ISO;
     // SCES_539.31 is stripped: the symbol map (recomp/shino_symbols.txt) names the functions the engine answers.
     options.symbolMap = SHINO_SYMBOL_MAP;
+    // The boot waits for the IOP sound modules' RPC servers before any frame ends: they advance while it waits.
+    options.advanceLibrariesWhileStalled = true;
     options.frames = window ? 0 : 600;
     options.printGameOutput = true;
     std::string wav, dumpRam;
@@ -94,6 +96,7 @@ int main(int argc, char **argv)
     options.gameTag = "SCES-53931"; // a save state loads only into Shinobido
     bozo::host::FreeHost host(options);
     bozo::ee::Dispatcher d(host);
+    shino::installAudio(host.libraries(), d.runtime().memory.ram());
     d.setFunctions(shino_function_table, shino_function_count, shino_resume_table, shino_resume_count);
     bozo::port::Registry registry;
     shino::install(d.runtime(), registry);
@@ -166,6 +169,7 @@ int main(int argc, char **argv)
                     (unsigned long long)stats.overrideCalls);
         for (const auto &[name, count] : stats.unanswered)
             std::printf("[shino:unanswered] %10llu %s\n", (unsigned long long)count, name.c_str());
+        shino::reportRender();
         if (std::getenv("SHINO_CALL_STATS"))
         {
             std::vector<std::pair<uint64_t, std::string>> byName;

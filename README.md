@@ -10,7 +10,7 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 ![Platform](https://img.shields.io/badge/platform-Windows%20(Linux%20%7C%20macOS%20later)-1b8cff)
 ![Compiler](https://img.shields.io/badge/compiler-GCC%20%7C%20Clang-1b8cff)
 ![Based on](https://img.shields.io/badge/based%20on-BozoEngine-17a35b)
-![Status](https://img.shields.io/badge/status-early%20bring--up-e6a700)
+![Status](https://img.shields.io/badge/status-boots%20to%20the%20main%20menu-e6a700)
 
 </div>
 
@@ -25,11 +25,31 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 
 ## Status
 
-Early bring-up (started 2026-11-23). BozoEngine's symbol matcher names the stripped executable (326 SDK
-functions, 20 of them read by hand). It is recompiled to C++ (14,141 functions, its C++ static constructors included)
-and built into a headless runner and a window build. The runner gets through the SDK's `_InitSys` and the game's
-constructors, then stops at the first unexplained jump. Nothing is drawn yet. See
-[docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) for every step and what is next.
+**The game boots to its main menu natively (2026-11-23).** It runs at full speed in a window, from the boot through
+"Sony Computer Entertainment Europe presents" and the memory card check to the title screen and its "New Game" menu.
+Everything on screen is drawn from the game's own data:
+- the game's render scheduler is replaced natively;
+- its VU1 microprograms (all of its 2D runs through them) are executed by the port;
+- the GS packets they send become native draws, with the textures decoded from the game's own uploads.
+
+The sound modules (Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE) are statically compiled, and the title plays
+its music.
+
+In progress:
+- **Movies** (the Acquire logo, the intro, the story films) decode natively, but their audio pre-buffer never fills,
+  so they are skipped for now.
+- **3D** (the game itself after "New Game") is not reached yet.
+
+[docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has every boot step, how the drawing works and what is next.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Sony Computer Entertainment Europe presents](docs/screenshots/2026-11-23-scee-presents.png) | ![The title's logo](docs/screenshots/2026-11-23-title-logo.png) |
+| The boot's first screen, drawn by the game's VU1 text program | The title: its logo and background, from the game's own textures |
+| ![The main menu](docs/screenshots/2026-11-23-main-menu.png) | |
+| The main menu ("New Game", on fresh memory cards) | |
 
 ## Goal
 
@@ -60,12 +80,20 @@ disc (your ISO) ──► scripts/extract_iso.sh ──► game/ (SCES_539.31, I
   (`0x614b80-0x617484`) are given as the code sections.
 - `runtime/shino_port.cpp` registers the port's overrides by address and its native instruction sites;
   `runtime/shino_main.cpp` is the headless runner and the window.
+- Drawing (bring-up path): `runtime/shino_render.cpp` answers the game's render scheduler and its vblank flip;
+  `runtime/shino_vu1.cpp` runs the VIF1 stream and the game's VU1 microprograms; `runtime/shino_gs.cpp` and
+  `runtime/shino_gs_state.cpp` turn their GS packets into native draws and decode the textures from the game's
+  uploads. To be replaced by native draws at the game's own functions, as the other ports do.
+- Sound: `tools/shino_bozo_audio.py` compiles the IOP sound modules from the disc (BozoEngine's `tools/native_irx`),
+  `runtime/shino_audio.cpp` runs them. Movies: BozoEngine's native libmpeg with a minimal static FFmpeg
+  (`scripts/build_ffmpeg.sh`).
 - Nothing derived from the disc is committed: the generated code is in `build/`.
 
 ## Requirements
 
 - Windows 10/11 with [MSYS2](https://www.msys2.org/) (UCRT64); Linux and macOS are the goal, not built yet
 - CMake 3.21+, Ninja, GCC 13+ or Clang with C++20
+- GNU make and curl (the movies' minimal FFmpeg is built from its source once: scripts/build_ffmpeg.sh)
 - `bsdtar` (libarchive) to extract the disc, Python 3
 - To regenerate the symbol map: reference executables that keep their symbols (scripts/symbols.sh)
 - A CPU with AVX2 (the runtime is built for `x86-64-v3`)
