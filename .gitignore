@@ -1,0 +1,31 @@
+# Game data (copyrighted, never commit)
+*.iso
+*.ISO
+game/
+*.elf
+*.ELF
+SLUS_*
+SCES_*
+*.DAT
+*.TRS
+*.PSS
+*.IRX
+*.irx
+*.IMG
+
+# Local build trees (generated code is derived from the game binary)
+build/
+out/
+
+# Runtime output
+mc0/
+mc1/
+imgui.ini
+*.wav
+
+# Editor / OS / tools noise
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+.claude/settings.local.json

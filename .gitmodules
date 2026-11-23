@@ -1,0 +1,3 @@
+[submodule "BozoEngine"]
+	path = BozoEngine
+	url = https://github.com/TheBozos/BozoEngine.git

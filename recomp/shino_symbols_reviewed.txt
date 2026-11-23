@@ -1,0 +1,22 @@
+# Names found by reading SCES_539.31's code, for bozo_symbolmap.py --reviewed (BozoEngine docs/specs/symbol-map.md).
+# One "name 0xADDR # evidence" line each. The map is made with scripts/symbols.sh <reference ELFs>.
+InitSys 0x2cfd58 # crt0 (_start 0x100008) calls it before FlushCache and main (0x100ba0); it calls 0x2cfc48, which installs syscalls with SetSyscall (116, at 0x2cfd4c) and scans kernel memory 0x80000000-0x80080000, then InitThread (0x2c67b8) among the SDK's inits: TTA's InitSys (0x32d268) in the same order
+InitThread 0x2c67b8 # the matcher's only candidate (between topThread and iWakeupThread, same shape 0.88, calls ChangeThreadPriority, CreateSema, CreateThread); called by InitSys 0x2cfd58
+sceCdInit 0x2d2b00 # sceSifCallRpc on the client bound to 0x80000592 (the CD/DVD init server) with function number 0, the pair of sceCdInit in SCUS_971.11, SCUS_971.01 and SLUS_200.18 (tools/shino_rpc_names.py)
+sceCdSearchFile 0x2d22d8 # sceSifCallRpc on the client bound to 0x80000597 with function number 0, the pair of sceCdSearchFile in the references (tools/shino_rpc_names.py)
+sceMcInit 0x2d5408 # sceSifCallRpc on the client bound to 0x80000400 (mcserv) with function number 0xfe, the pair of sceMcInit in the references (tools/shino_rpc_names.py)
+sceMcChangeThreadPriority 0x2d5760 # mcserv 0x80000400, function 0x14 (tools/shino_rpc_names.py)
+sceMcGetSlotMax 0x2d5820 # mcserv 0x80000400, function 0x15 (tools/shino_rpc_names.py)
+sceMcOpen 0x2d58e0 # mcserv 0x80000400, function 0x2 (tools/shino_rpc_names.py)
+sceMcClose 0x2d5a40 # mcserv 0x80000400, function 0x3 (tools/shino_rpc_names.py)
+sceMcSeek 0x2d5b00 # mcserv 0x80000400, function 0x4 (tools/shino_rpc_names.py)
+sceMcRead 0x2d5c90 # mcserv 0x80000400, function 0x5 (tools/shino_rpc_names.py)
+sceMcWrite 0x2d5da8 # mcserv 0x80000400, function 0x6 (tools/shino_rpc_names.py)
+sceMcGetInfo 0x2d6040 # mcserv 0x80000400, function 0x1 (tools/shino_rpc_names.py)
+sceMcGetDir 0x2d6230 # mcserv 0x80000400, function 0xd (tools/shino_rpc_names.py)
+sceMcChdir 0x2d6410 # mcserv 0x80000400, function 0xc (tools/shino_rpc_names.py)
+sceMcFormat 0x2d6550 # mcserv 0x80000400, function 0x10 (tools/shino_rpc_names.py)
+sceMcDelete 0x2d6620 # mcserv 0x80000400, function 0xf (tools/shino_rpc_names.py)
+sceMcFlush 0x2d6740 # mcserv 0x80000400, function 0xa (tools/shino_rpc_names.py)
+sceMcUnformat 0x2d6b28 # mcserv 0x80000400, function 0x11 (tools/shino_rpc_names.py)
+sceMcGetEntSpace 0x2d6bf8 # mcserv 0x80000400, function 0x12 (tools/shino_rpc_names.py)
