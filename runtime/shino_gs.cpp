@@ -5,6 +5,7 @@
 // VIF1 and the VU1 are runtime/shino_vu1.cpp. docs/RECOMP_NOTES.md.
 #include "shino_gs.h"
 #include "shino_port.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -92,13 +93,29 @@ namespace shino
 
     void gs::packets(const uint8_t *data, uint32_t bytes)
     {
-        for (uint32_t at = 0; at + 16 <= bytes; at += 16)
+        prof::Scope timed(prof::Gs);
+        for (uint32_t at = 0; at + 16 <= bytes;)
+        {
+            if (g_gif.inTag && g_gif.flg == 2 && g_gif.loops) // a run of IMAGE data at once
+            {
+                prof::Scope upload(prof::Upload);
+                const uint32_t n = std::min(g_gif.loops, (bytes - at) / 16);
+                gs::imageBytes(data + at, n * 16); // the run at once
+                g_qwImage += n;
+                at += n * 16;
+                if ((g_gif.loops -= n) == 0)
+                    g_gif.inTag = false;
+                continue;
+            }
             gifQuadword(g_gif, data + at);
+            at += 16;
+        }
     }
 
     void gs::path1(const uint8_t *vuMemory, uint32_t address)
     {
         // A VU1 XGKICK: GIF packets from VU1 data memory (1024 quadwords, wrapping) up to the tag with EOP.
+        prof::Scope timed(prof::Gs);
         for (int packets = 0; packets < 64; ++packets)
         {
             const uint8_t *tag = vuMemory + 16 * (address & 0x3FFu);

@@ -248,6 +248,11 @@ namespace shino
             const uint32_t caller = ctx->r[31].uw[0];
             ctx->r[2].ud[0] = 0;
             const uint8_t count = rd8(kVblanks), minimum = rd8(kVblanksPerFrame);
+            if (static const char *t = std::getenv("SHINO_TRACE_VBLANK"); t && gs::flips() >= std::strtoull(t, nullptr, 10) &&
+                                                                          gs::flips() < std::strtoull(t, nullptr, 10) + 4)
+                std::printf("[shino:vblank] flip %llu cause %u count %u minimum %u waiting %u cycle %llu\n",
+                            (unsigned long long)gs::flips(), ctx->r[4].uw[0], count, minimum, rd8(kWaitFlip),
+                            (unsigned long long)bozo::port::vblankCount(rt));
             if (count < minimum)
             {
                 if (minimum < 0xFF)

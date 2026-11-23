@@ -121,10 +121,23 @@ int main(int argc, char **argv)
 
     bozo::app::FramePacer pacer;
     pacer.setPaced(window);
-    if (!std::getenv("PS2X_FRAME_CAP"))
-        pacer.setCap(50); // PAL: the game ends a frame each of its 50 fields a second (the movies at 25 or 50)
+    // Each frame held to the game's own time: the vblanks (PAL fields, 50 a second) it spanned. The game flips every
+    // second vblank (its vblank handler's minimum is 2: 25 frames a second, menus and gameplay alike), so a cap of 50
+    // frames a second ran it at twice its speed wherever the port kept up. PS2X_FRAME_CAP overrides.
+    const bool capFromEnvironment = std::getenv("PS2X_FRAME_CAP") != nullptr;
+    if (!capFromEnvironment)
+        pacer.setCap(25);
+    uint64_t lastFrameCycles = 0;
     host.onFrame = [&](uint64_t f, const R5900Context *ctx)
     {
+        const uint64_t now = d.now();
+        if (!capFromEnvironment && lastFrameCycles && now > lastFrameCycles)
+        {
+            const double fields = double(now - lastFrameCycles) / double(options.framePeriodCycles);
+            const uint32_t spanned = static_cast<uint32_t>(std::clamp(fields + 0.5, 1.0, 10.0));
+            pacer.setCap(50u / spanned);
+        }
+        lastFrameCycles = now;
         pacer.frameEnd();
         if (f % 60 == 0)
             std::printf("[shino] frame=%llu pc=%x cycles=%llu\n", (unsigned long long)f, ctx->pc,

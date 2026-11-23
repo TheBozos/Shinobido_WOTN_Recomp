@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <immintrin.h>
 #include <map>
 #include <vector>
 
@@ -265,6 +266,238 @@ namespace shino
             }
         }
 
+        // ---- The upper instruction, decoded once (Decoded) and run on whole vectors -------------------------------
+        // The arithmetic (ADD / SUB / MADD / MSUB / MUL / MAX / MINI and their broadcast, Q, I and ACC forms) and NOP;
+        // the rest goes through upper() / commitUpper(). Same results as upper(): MAX / MINI as std::max / std::min
+        // (operands swapped for SSE's), NaN 0, clamped to the largest finite.
+        enum UpperKind : uint8_t { kUpperScalar, kUpperArith, kUpperNop };
+        struct Decoded
+        {
+            uint32_t lo = 0, up = 0; // the pair it was decoded from (a new MPG makes it decode again)
+            bool valid = false;
+            uint8_t kind = kUpperScalar, fn = 0, operand = 0, dest = 0, fs = 0, ft = 0, fd = 0, bc = 0;
+            bool toAcc = false, setsMac = false;
+            uint8_t xtop = 0, xreg = 0; // 1 XTOP, 2 XITOP into vi[xreg]
+            // The lower instruction (lowerFast; kLowerSlow: lower()): its kind, registers, dest, the FSF / FTF fields,
+            // its immediate (imm5, imm11 or imm15, sign-extended where the instruction does) and branch target.
+            uint8_t lk = 0, is = 0, it = 0, id = 0, ldest = 0, fsf = 0, ftf = 0;
+            int32_t imm = 0;
+            uint32_t target = 0;
+        };
+        std::array<Decoded, 2048> g_decoded, g_decoded0; // VU1's pairs, VU0's
+
+        enum LowerKind : uint8_t
+        {
+            kLowerSlow, kLowerNone, kIadd, kIsub, kIaddi, kIand, kIor, kIaddiu, kIsubiu, kMove, kMr32, kLqi, kSqi, kLqd, kSqd,
+            kLq, kSq, kIlw, kIsw, kIlwr, kIswr, kMtir, kMfir, kDiv, kSqrt, kRsqrt, kWaitq, kB, kBal, kJr, kJalr, kIbeq, kIbne,
+            kIbltz, kIbgtz, kIblez, kIbgez,
+        };
+
+        void decodeLower(Decoded &d, uint32_t lo, uint32_t up, uint32_t pc, uint32_t pcMask)
+        {
+            d.is = (lo >> 11) & 31u;
+            d.it = (lo >> 16) & 31u;
+            d.id = (lo >> 6) & 31u;
+            d.ldest = (lo >> 21) & 0xFu;
+            d.fsf = (lo >> 21) & 3u;
+            d.ftf = (lo >> 23) & 3u;
+            const int32_t imm11 = static_cast<int32_t>(lo << 21) >> 21;
+            d.target = static_cast<uint32_t>((static_cast<int64_t>(pc) + 8 + static_cast<int64_t>(imm11) * 8) & pcMask);
+            d.lk = kLowerSlow;
+            if ((up >> 31) & 1u)
+            {
+                d.lk = kLowerNone; // LOI: the lower word is I's value
+                return;
+            }
+            if (lo >> 31)
+            {
+                switch (lo & 0x3Fu)
+                {
+                case 0x30: d.lk = kIadd; return;
+                case 0x31: d.lk = kIsub; return;
+                case 0x32: d.lk = kIaddi; d.imm = static_cast<int32_t>(lo << 21) >> 27; return;
+                case 0x34: d.lk = kIand; return;
+                case 0x35: d.lk = kIor; return;
+                default: break;
+                }
+                if ((lo & 0x3Fu) < 0x3C)
+                    return; // refused, counted by lower()
+                switch (((lo >> 6) & 0x1Fu) << 2 | (lo & 3u))
+                {
+                case 0x30: d.lk = kMove; return;
+                case 0x31: d.lk = kMr32; return;
+                case 0x34: d.lk = kLqi; return;
+                case 0x35: d.lk = kSqi; return;
+                case 0x36: d.lk = kLqd; return;
+                case 0x37: d.lk = kSqd; return;
+                case 0x38: d.lk = kDiv; return;
+                case 0x39: d.lk = kSqrt; return;
+                case 0x3A: d.lk = kRsqrt; return;
+                case 0x3B: d.lk = kWaitq; return;
+                case 0x3C: d.lk = kMtir; return;
+                case 0x3D: d.lk = kMfir; return;
+                case 0x3E: d.lk = kIlwr; return;
+                case 0x3F: d.lk = kIswr; return;
+                case 0x68: case 0x69: d.lk = kLowerNone; return; // XTOP / XITOP: the loop
+                default: return;
+                }
+            }
+            switch (lo >> 25)
+            {
+            case 0x00: d.lk = kLq; d.imm = imm11; return;
+            case 0x01: d.lk = kSq; d.imm = imm11; return;
+            case 0x04: d.lk = kIlw; d.imm = imm11; return;
+            case 0x05: d.lk = kIsw; d.imm = imm11; return;
+            case 0x08: case 0x09:
+                d.lk = (lo >> 25) == 0x08 ? kIaddiu : kIsubiu;
+                d.imm = static_cast<int32_t>(((lo >> 10) & 0x7800u) | (lo & 0x7FFu));
+                return;
+            case 0x20: d.lk = kB; return;
+            case 0x21: d.lk = kBal; return;
+            case 0x24: d.lk = kJr; return;
+            case 0x25: d.lk = kJalr; return;
+            case 0x28: d.lk = kIbeq; return;
+            case 0x29: d.lk = kIbne; return;
+            case 0x2C: d.lk = kIbltz; return;
+            case 0x2D: d.lk = kIbgtz; return;
+            case 0x2E: d.lk = kIblez; return;
+            case 0x2F: d.lk = kIbgez; return;
+            default: return;
+            }
+        }
+
+        Decoded decodePair(uint32_t lo, uint32_t up, uint32_t pc, uint32_t pcMask)
+        {
+            Decoded d;
+            decodeLower(d, lo, up, pc, pcMask);
+            d.lo = lo;
+            d.up = up;
+            d.valid = true;
+            d.dest = (up >> 21) & 0xFu;
+            d.ft = (up >> 16) & 31u;
+            d.fs = (up >> 11) & 31u;
+            d.fd = (up >> 6) & 31u;
+            d.bc = up & 3u;
+            // fn: 0 add 1 sub 2 madd 3 msub 4 mul 5 max 6 min; operand: 0 ft, 1 broadcast, 2 Q, 3 I
+            auto arith = [&](int fn, int operand, bool toAcc) {
+                d.kind = kUpperArith;
+                d.fn = static_cast<uint8_t>(fn);
+                d.operand = static_cast<uint8_t>(operand);
+                d.toAcc = toAcc;
+                d.setsMac = fn <= 4;
+            };
+            const uint32_t op = up & 0x3Fu;
+            if (op < 0x3C)
+            {
+                static const int8_t table[0x30][2] = {
+                    {0, 1}, {0, 1}, {0, 1}, {0, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}, {2, 1}, {2, 1}, {2, 1}, {2, 1},
+                    {3, 1}, {3, 1}, {3, 1}, {3, 1}, {5, 1}, {5, 1}, {5, 1}, {5, 1}, {6, 1}, {6, 1}, {6, 1}, {6, 1},
+                    {4, 1}, {4, 1}, {4, 1}, {4, 1}, {4, 2}, {5, 3}, {4, 3}, {6, 3}, {0, 2}, {2, 2}, {0, 3}, {2, 3},
+                    {1, 2}, {3, 2}, {1, 3}, {3, 3}, {0, 0}, {2, 0}, {4, 0}, {5, 0}, {1, 0}, {3, 0}, {-1, 0}, {6, 0}};
+                if (op < 0x30 && table[op][0] >= 0)
+                    arith(table[op][0], table[op][1], false);
+            }
+            else
+            {
+                const uint32_t sp = ((up >> 6) & 0x1Fu) << 2 | (up & 3u);
+                if (sp <= 0x0F)
+                    arith(static_cast<int>(sp >> 2) /* add sub madd msub */, 1, true);
+                else if (sp >= 0x18 && sp <= 0x1B)
+                    arith(4, 1, true);
+                else if (sp == 0x1C) arith(4, 2, true);
+                else if (sp == 0x1E) arith(4, 3, true);
+                else if (sp >= 0x20 && sp <= 0x27)
+                {
+                    static const int8_t accq[8][2] = {{0, 2}, {2, 2}, {0, 3}, {2, 3}, {1, 2}, {3, 2}, {1, 3}, {3, 3}};
+                    arith(accq[sp - 0x20][0], accq[sp - 0x20][1], true);
+                }
+                else if (sp == 0x28) arith(0, 0, true);
+                else if (sp == 0x29) arith(2, 0, true);
+                else if (sp == 0x2A) arith(4, 0, true);
+                else if (sp == 0x2C) arith(1, 0, true);
+                else if (sp == 0x2D) arith(3, 0, true);
+                else if (sp == 0x2F) d.kind = kUpperNop;
+            }
+            // XTOP / XITOP: the double buffer, read by the loop
+            if ((lo >> 31) && (lo & 0x3Fu) >= 0x3C)
+            {
+                const uint32_t lsp = ((lo >> 6) & 0x1Fu) << 2 | (lo & 3u);
+                if (lsp == 0x68 || lsp == 0x69)
+                {
+                    d.xtop = lsp == 0x68 ? 1 : 2;
+                    d.xreg = (lo >> 16) & 15u;
+                }
+            }
+            return d;
+        }
+
+        // The lanes a dest field writes (x in lane 0), as masks; and 4 bits reversed (lane order to the MAC's x = bit 3).
+        struct LaneMasks
+        {
+            __m128 m[16];
+            uint8_t rev[16];
+            LaneMasks()
+            {
+                for (uint32_t dest = 0; dest < 16; ++dest)
+                {
+                    alignas(16) uint32_t w[4];
+                    for (int f = 0; f < 4; ++f)
+                        w[f] = has(dest, f) ? 0xFFFFFFFFu : 0u;
+                    m[dest] = _mm_load_ps(reinterpret_cast<const float *>(w));
+                    rev[dest] = static_cast<uint8_t>(((dest & 1u) << 3) | ((dest & 2u) << 1) | ((dest & 4u) >> 1) | ((dest & 8u) >> 3));
+                }
+            }
+        } const g_lanes;
+
+        // The arithmetic's result from the registers before the pair's lower instruction.
+        inline __m128 upperArith(const Decoded &d)
+        {
+            const Vu1 &v = *g_cur;
+            const __m128 a = _mm_loadu_ps(v.vf[d.fs].f);
+            __m128 b;
+            switch (d.operand)
+            {
+            case 0: b = _mm_loadu_ps(v.vf[d.ft].f); break;
+            case 1: b = _mm_set1_ps(v.vf[d.ft].f[d.bc]); break;
+            case 2: b = _mm_set1_ps(v.q); break;
+            default: b = _mm_set1_ps(v.i); break;
+            }
+            __m128 r;
+            switch (d.fn)
+            {
+            case 0: r = _mm_add_ps(a, b); break;
+            case 1: r = _mm_sub_ps(a, b); break;
+            case 2: r = _mm_add_ps(_mm_loadu_ps(v.acc.f), _mm_mul_ps(a, b)); break;
+            case 3: r = _mm_sub_ps(_mm_loadu_ps(v.acc.f), _mm_mul_ps(a, b)); break;
+            case 4: r = _mm_mul_ps(a, b); break;
+            case 5: r = _mm_max_ps(b, a); break; // std::max(a, b): a < b ? b : a
+            default: r = _mm_min_ps(b, a); break; // std::min(a, b): b < a ? b : a
+            }
+            // clampF: NaN 0, then the largest finite either way
+            r = _mm_and_ps(r, _mm_cmpord_ps(r, r));
+            r = _mm_min_ps(r, _mm_set1_ps(kFloatMax));
+            return _mm_max_ps(r, _mm_set1_ps(-kFloatMax));
+        }
+
+        inline void commitArith(const Decoded &d, __m128 r)
+        {
+            Vu1 &v = *g_cur;
+            if (!d.toAcc && d.fd == 0)
+                return; // vf0: no write, no flags
+            float *dst = d.toAcc ? v.acc.f : v.vf[d.fd].f;
+            const __m128 mask = g_lanes.m[d.dest];
+            _mm_storeu_ps(dst, _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, _mm_loadu_ps(dst))));
+            if (d.setsMac)
+            {
+                const uint32_t lanes = static_cast<uint32_t>(_mm_movemask_ps(mask));
+                const uint32_t zero = static_cast<uint32_t>(_mm_movemask_ps(_mm_cmpeq_ps(r, _mm_setzero_ps()))) & lanes;
+                const uint32_t sign = static_cast<uint32_t>(_mm_movemask_ps(r)) & lanes;
+                const uint16_t mac = static_cast<uint16_t>(g_lanes.rev[zero] | (g_lanes.rev[sign] << 4));
+                v.mac = mac;
+                v.status = (v.status & ~3u) | ((mac & 0xF) ? 1u : 0u) | ((mac & 0xF0) ? 2u : 0u);
+            }
+        }
+
         float efuField(const Vec &s, uint32_t w) { return s.f[(w >> 21) & 3u]; }
 
         // The lower instruction of a pair. Returns a branch target (byte address) or -1; `end` for XGKICK etc.
@@ -424,6 +657,91 @@ namespace shino
             }
         }
 
+        // The lower instruction from its decoding: the common ones here (as lower() does them), the rest through lower().
+        inline int64_t lowerFast(const Decoded &d, uint32_t lo, uint32_t pc, bool &loi)
+        {
+            Vu1 &v = *g_cur;
+            auto vi = [&](uint32_t r) -> uint32_t { return v.vi[r & 15u]; };
+            auto setVi = [&](uint32_t r, uint32_t value) { if (r & 15u) v.vi[r & 15u] = static_cast<uint16_t>(value); };
+            auto setVf = [&](uint32_t r, __m128 value) {
+                if (r == 0) return;
+                const __m128 mask = g_lanes.m[d.ldest];
+                _mm_storeu_ps(v.vf[r].f, _mm_or_ps(_mm_and_ps(mask, value), _mm_andnot_ps(mask, _mm_loadu_ps(v.vf[r].f))));
+            };
+            auto store = [&](uint32_t qw, uint32_t r) {
+                float *m = memVec(qw).f;
+                const __m128 mask = g_lanes.m[d.ldest];
+                _mm_storeu_ps(m, _mm_or_ps(_mm_and_ps(mask, _mm_loadu_ps(v.vf[r].f)), _mm_andnot_ps(mask, _mm_loadu_ps(m))));
+            };
+            auto load = [&](uint32_t qw) { return _mm_loadu_ps(memVec(qw).f); };
+            switch (d.lk)
+            {
+            case kLowerNone: return -1;
+            case kIadd: setVi(d.id, vi(d.is) + vi(d.it)); return -1;
+            case kIsub: setVi(d.id, vi(d.is) - vi(d.it)); return -1;
+            case kIaddi: setVi(d.it, vi(d.is) + static_cast<uint32_t>(d.imm)); return -1;
+            case kIand: setVi(d.id, vi(d.is) & vi(d.it)); return -1;
+            case kIor: setVi(d.id, vi(d.is) | vi(d.it)); return -1;
+            case kIaddiu: setVi(d.it, vi(d.is) + static_cast<uint32_t>(d.imm)); return -1;
+            case kIsubiu: setVi(d.it, vi(d.is) - static_cast<uint32_t>(d.imm)); return -1;
+            case kMove: setVf(d.it, _mm_loadu_ps(v.vf[d.is].f)); return -1;
+            case kMr32: setVf(d.it, _mm_shuffle_ps(_mm_loadu_ps(v.vf[d.is].f), _mm_loadu_ps(v.vf[d.is].f), _MM_SHUFFLE(0, 3, 2, 1))); return -1;
+            case kLqi: setVf(d.it, load(vi(d.is))); setVi(d.is, vi(d.is) + 1); return -1;
+            case kSqi: store(vi(d.it), d.is); setVi(d.it, vi(d.it) + 1); return -1;
+            case kLqd: setVi(d.is, vi(d.is) - 1); setVf(d.it, load(vi(d.is))); return -1;
+            case kSqd: setVi(d.it, vi(d.it) - 1); store(vi(d.it), d.is); return -1;
+            case kLq: setVf(d.it, load(vi(d.is) + static_cast<uint32_t>(d.imm))); return -1;
+            case kSq: store(vi(d.it) + static_cast<uint32_t>(d.imm), d.is); return -1;
+            case kIlw: case kIlwr:
+            {
+                const uint32_t qw = vi(d.is) + (d.lk == kIlw ? static_cast<uint32_t>(d.imm) : 0u);
+                for (int f = 0; f < 4; ++f)
+                    if (has(d.ldest, f))
+                    {
+                        setVi(d.it, memWord(qw, f));
+                        break;
+                    }
+                return -1;
+            }
+            case kIsw: case kIswr:
+            {
+                const uint32_t qw = vi(d.is) + (d.lk == kIsw ? static_cast<uint32_t>(d.imm) : 0u);
+                for (int f = 0; f < 4; ++f)
+                    if (has(d.ldest, f))
+                        memWord(qw, f) = vi(d.it);
+                return -1;
+            }
+            case kMtir: setVi(d.it, asU(v.vf[d.is].f[d.fsf])); return -1;
+            case kMfir: setVf(d.it, _mm_set1_ps(asF(static_cast<uint32_t>(static_cast<int32_t>(s16(vi(d.is))))))); return -1;
+            case kDiv: case kSqrt: case kRsqrt:
+            {
+                const float s = v.vf[d.is].f[d.fsf], t = v.vf[d.it].f[d.ftf];
+                float r;
+                if (d.lk == kDiv)
+                    r = t != 0.0f ? s / t : (std::signbit(s) != std::signbit(t) ? -kFloatMax : kFloatMax);
+                else if (d.lk == kSqrt)
+                    r = std::sqrt(std::fabs(t));
+                else
+                    r = t != 0.0f ? s / std::sqrt(std::fabs(t)) : kFloatMax;
+                v.pendingQ = clampF(r);
+                v.qDelay = d.lk == kRsqrt ? 13 : 7;
+                return -1;
+            }
+            case kWaitq: if (v.qDelay) { v.q = v.pendingQ; v.qDelay = 0; } return -1;
+            case kB: return static_cast<int64_t>(d.target);
+            case kBal: setVi(d.it, (pc + 16) / 8); return static_cast<int64_t>(d.target);
+            case kJr: return static_cast<int64_t>(vi(d.is)) * 8;
+            case kJalr: { const uint32_t to = vi(d.is) * 8; setVi(d.it, (pc + 16) / 8); return to; }
+            case kIbeq: return vi(d.is) == vi(d.it) ? static_cast<int64_t>(d.target) : int64_t(-1);
+            case kIbne: return vi(d.is) != vi(d.it) ? static_cast<int64_t>(d.target) : int64_t(-1);
+            case kIbltz: return s16(vi(d.is)) < 0 ? static_cast<int64_t>(d.target) : int64_t(-1);
+            case kIbgtz: return s16(vi(d.is)) > 0 ? static_cast<int64_t>(d.target) : int64_t(-1);
+            case kIblez: return s16(vi(d.is)) <= 0 ? static_cast<int64_t>(d.target) : int64_t(-1);
+            case kIbgez: return s16(vi(d.is)) >= 0 ? static_cast<int64_t>(d.target) : int64_t(-1);
+            default: return lower(lo, pc, loi);
+            }
+        }
+
         // ---- VIF1 -------------------------------------------------------------------------------------------------
         struct Vif
         {
@@ -433,13 +751,14 @@ namespace shino
             uint32_t code = 0;          // the command whose data is being gathered
             std::vector<uint8_t> data;  // its data so far
             uint32_t need = 0;          // bytes it needs
-            std::map<uint32_t, uint64_t> counts;
+            std::array<uint64_t, 128> counts{}; // by command (UNPACK all at 0x60)
         } g_vif, g_vif0;
         Vif *g_cv = &g_vif; // the VIF whose codes are being read
 
         void runProgram(uint32_t pcBytes)
         {
             Vu1 &v = *g_cur;
+            prof::Scope timed(v.vu0 ? prof::Vu0 : prof::Vu1);
             g_programStart = pcBytes;
             {
                 static int count = -1;
@@ -471,31 +790,40 @@ namespace shino
             // TOP: the buffer the program reads; the next uses the other (BASE, BASE + OFFSET).
             v.vi[0] = 0;
             uint32_t pc = pcBytes & v.pcMask;
+            auto &decoded = v.vu0 ? g_decoded0 : g_decoded;
             int64_t branch = -1;
             bool ending = false;
             for (int guard = 0; guard < 1 << 22; ++guard)
             {
                 const uint32_t lo = v.micro[pc >> 2], up = v.micro[(pc >> 2) + 1];
+                Decoded &d = decoded[(pc >> 3) & 2047u];
+                if (!d.valid || d.lo != lo || d.up != up)
+                    d = decodePair(lo, up, pc, v.pcMask);
                 ++v.pairs;
                 // Q's pending result lands
                 if (v.qDelay && --v.qDelay == 0)
                     v.q = v.pendingQ;
-                UpperResult u;
-                upper(up, u);
+                static UpperResult u; // made afresh only for upper()
+                __m128 arithResult;
+                static const bool scalarOnly = std::getenv("SHINO_VU_SCALAR") != nullptr; // the reference path, for checks
+                static const uint64_t slowKinds = std::getenv("SHINO_LOWER_SLOW") ? std::strtoull(std::getenv("SHINO_LOWER_SLOW"), nullptr, 0) : 0;
+                const UpperKind kind = g_traceThis || scalarOnly ? kUpperScalar : static_cast<UpperKind>(d.kind); // traces print upper()'s
+                if (kind == kUpperArith)
+                    arithResult = upperArith(d);
+                else if (kind == kUpperScalar)
+                {
+                    u = UpperResult{};
+                    upper(up, u);
+                }
                 bool loi = (up >> 31) & 1u;
                 // XTOP / XITOP read the double buffer
-                if ((lo >> 31) && (((lo >> 6) & 0x1Fu) << 2 | (lo & 3u)) == 0x68 && (lo & 0x3Fu) >= 0x3C)
-                {
-                    const uint32_t it = (lo >> 16) & 15u;
-                    if (it) v.vi[it] = static_cast<uint16_t>(g_cv->top);
-                }
-                else if ((lo >> 31) && (((lo >> 6) & 0x1Fu) << 2 | (lo & 3u)) == 0x69 && (lo & 0x3Fu) >= 0x3C)
-                {
-                    const uint32_t it = (lo >> 16) & 15u;
-                    if (it) v.vi[it] = static_cast<uint16_t>(g_cv->itop);
-                }
-                const int64_t to = lower(lo, pc, loi);
-                commitUpper(u);
+                if (d.xtop && d.xreg)
+                    v.vi[d.xreg] = static_cast<uint16_t>(d.xtop == 1 ? g_cv->top : g_cv->itop);
+                const int64_t to = g_traceThis || scalarOnly || ((slowKinds >> d.lk) & 1u) ? lower(lo, pc, loi) : lowerFast(d, lo, pc, loi);
+                if (kind == kUpperArith)
+                    commitArith(d, arithResult);
+                else if (kind == kUpperScalar)
+                    commitUpper(u);
                 v.macHistory[v.macAt++ & 3u] = v.mac;
                 if (loi)
                     v.i = asF(lo);
@@ -584,6 +912,36 @@ namespace shino
             uint32_t addr = code & 0x3FFu;
             if (flg) addr += f.tops;
             const uint32_t cl = std::max(f.cl, 1u), wl = std::max(f.wl, 1u);
+            // The common case: no mask, no fill, STMOD 0, 32 / 16 / 8-bit elements: the vectors straight from the data
+            // (the same values as the general way below).
+            if (!masked && f.mode == 0 && wl <= cl && vl != 3)
+            {
+                const uint32_t n = vn + 1, size = 4u >> vl;
+                const uint8_t *p = data;
+                for (uint32_t i = 0; i < num; ++i)
+                {
+                    const uint32_t dest = addr + (i / wl) * cl + i % wl;
+                    uint32_t in[4];
+                    if (vl == 0)
+                    {
+                        std::memcpy(in, p, 4 * n);
+                        p += 4 * n;
+                    }
+                    else
+                        for (uint32_t e = 0; e < n; ++e, p += size)
+                        {
+                            uint32_t x = size == 2 ? uint32_t(p[0] | (p[1] << 8)) : uint32_t(p[0]);
+                            if (!usn)
+                                x = size == 2 ? uint32_t(int32_t(int16_t(x))) : uint32_t(int32_t(int8_t(x)));
+                            in[e] = x;
+                        }
+                    if (vn == 0) in[1] = in[2] = in[3] = in[0];
+                    else if (vn == 1) { in[2] = in[0]; in[3] = in[1]; }
+                    else if (vn == 2) in[3] = in[2];
+                    std::memcpy(&memWord(dest, 0), in, 16);
+                }
+                return;
+            }
             uint32_t bitPos = 0;
             auto take = [&](uint32_t bits) -> uint32_t {
                 uint32_t v = 0;
@@ -675,6 +1033,7 @@ namespace shino
                 break;
             }
             case 0x50: case 0x51: // DIRECT, DIRECTHL (VIF1 only)
+                if (prof::Scope timed(prof::Gs); true)
                 for (uint32_t at = 0; !g_cur->vu0 && at + 16 <= f.need; at += 16)
                     gs::directQuadword(data + at);
                 break;
@@ -704,6 +1063,7 @@ namespace shino
 
     void vif::codes(const uint8_t *data, uint32_t bytes, bool)
     {
+        prof::Scope timed(prof::Vif);
         Vif &f = *g_cv;
         for (uint32_t at = 0; at + 4 <= bytes;)
         {
@@ -732,7 +1092,8 @@ namespace shino
             at += 4;
             const uint32_t cmd = (code >> 24) & 0x7Fu;
             ++f.counts[cmd >= 0x60 ? 0x60 : cmd];
-            if (static const char *tr = std::getenv("SHINO_TRACE_VIF"); tr && gs::flips() == static_cast<uint64_t>(std::atoll(tr)))
+            bool traced = false; // SHINO_TRACE_VIF prints the data as it is gathered
+            if (static const char *tr = std::getenv("SHINO_TRACE_VIF"); tr && gs::flips() == static_cast<uint64_t>(std::atoll(tr)) && (traced = true))
                 std::printf("[shino:vif] %08x cl=%u wl=%u tops=%x base=%x offset=%x mode=%u\n", code, f.cl, f.wl, f.tops, f.base,
                             f.offset, f.mode);
             f.code = code;
@@ -741,6 +1102,12 @@ namespace shino
             // padding (VIF NOPs) is already in the stream as codes, so nothing to skip here.
             if (!f.need)
                 execute(code, nullptr);
+            else if (f.need <= bytes - at && !traced) // all its data here: run from the stream, not a copy
+            {
+                execute(code, data + at);
+                at += f.need;
+                f.need = 0;
+            }
         }
     }
 
@@ -829,8 +1196,9 @@ namespace shino
     void vif::report()
     {
         std::printf("[shino:vif]");
-        for (const auto &[cmd, n] : g_vif.counts)
-            std::printf(" %02x:%llu", cmd, (unsigned long long)n);
+        for (uint32_t cmd = 0; cmd < g_vif.counts.size(); ++cmd)
+            if (g_vif.counts[cmd])
+                std::printf(" %02x:%llu", cmd, (unsigned long long)g_vif.counts[cmd]);
         std::printf("\n[shino:vu1] programs=%llu pairs=%llu kicks=%llu refused=%llu\n", (unsigned long long)g_vu.programs,
                     (unsigned long long)g_vu.pairs, (unsigned long long)g_vu.kicks, (unsigned long long)g_vu.refused);
         std::printf("[shino:vu0] programs=%llu pairs=%llu refused=%llu\n", (unsigned long long)g_vu0.programs,

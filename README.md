@@ -39,10 +39,13 @@ The sound modules (Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE) are sta
 its music.
 
 **The movies play with their sound** (the Acquire logo and the intro before the title): decoded natively, their
-audio fed through the game's own player to the IOP. The game runs at the PAL rate, 50 frames a second.
+audio fed through the game's own player to the IOP.
+
+**The game runs at full speed**: 25 frames a second, as on a PAL console (the game draws a frame every second field),
+the 3D gameplay included.
 
 In progress:
-- **Speed in play**: gameplay runs at about 20 to 25 frames a second instead of 50.
+- **Loading the castle** runs at about 15 frames a second for a few seconds, before the opening cutscene.
 - **Sound in play**: sound effects and voices are not checked yet.
 
 [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has every boot step, how the drawing works and what is next.

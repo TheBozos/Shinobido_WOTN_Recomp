@@ -219,14 +219,44 @@ Three things made the 3D's surfaces wrong (flat colours, green walls, rainbow st
 - **Perspective.** STQ draws hand the GS's Q to the renderer (`Material::useQ`), S / Q and T / Q interpolated in
   perspective as the GS does.
 
+## Speed
+
+The game runs at 25 frames a second (PAL pacing, below), and play holds it in the window: about 40 frames a second
+of headroom headless. A gameplay frame was about 66 ms (2026-11-23); what it took, by `SHINO_PROFILE=1` (each part's
+time a flip, exclusive; `SHINO_RATE=1` the rate alone):
+- **VU1** (1.9M instruction pairs a frame): each pair decoded once (`Decoded`, checked against the raw words, so a new
+  MPG needs no invalidation); the upper's arithmetic on whole vectors (SSE: MAX / MINI as `std::max` / `std::min` on
+  ±0, NaN 0, clamped), the common lower instructions from the decoding (`lowerFast`), the rest through the scalar
+  `upper()` / `lower()`. About twice as fast. `SHINO_VU_SCALAR=1` runs the scalar path, `SHINO_LOWER_SLOW=<mask>` the
+  lower kinds in the mask through `lower()`: the checks.
+- **VIF**: codes counted in an array (a `std::map` before); a command's data used in place when the chunk holds it all;
+  UNPACK's common case (no mask, no fill, STMOD 0, whole-byte elements) without the bit reader.
+- **Uploads** (all CT32 or CT16, about 1 MB a frame: the 4- and 8-bit textures go up as 32- and 16-bit pixels):
+  gathered and written when complete, by whole GS blocks (a compare and a copy of 256 bytes) when aligned, by rows
+  otherwise; a page is marked written only when a value in it changes.
+- **Textures**: decoded ones also kept by the hash of the bytes they come from (the game streams its textures through
+  a shared area every frame: swapped back in, a texture is not decoded again); the last primitive's texture reused
+  while nothing was written. Decodes down about four times.
+- **The GS translator**: the materials made again only when their registers change; primitives of the same material
+  and texture merge into one batch, a two-pass (AFAIL) run keeping its passes in two (before, two batches a triangle).
+- `SHINO_CHECKSUM=1`: a hash of every vertex drawn, every 500 flips; all the changes above keep it, through the boot,
+  New Game, the cutscene and play.
+
 ## Next
 
-- 3D: the frame rate in play (about 20 to 25 frames a second); scissor, FBMSK and the offscreen draws
-  (render-to-texture) are not drawn; then native draws at the game's model functions.
+- Speed: the castle's load and the cutscene's start (frames 1500 to 1900 of the New Game run) at 15 frames a second.
+- 3D: scissor, FBMSK and the offscreen draws (render-to-texture) are not drawn; then native draws at the game's model
+  functions.
 - Sound: the sound effects and voices in play; the Acquire logo's short sting is silent.
 
 ## PAL pacing
 
 The game resets the GS with video mode 0 (`sceGsResetGraph`): the console's own standard. A PAL console's is PAL, so
-the port sets BozoEngine's `palConsole` (fields at 50 Hz for mode 0, as for mode 3), and the window paces the game
-at 50 frames a second (`PS2X_FRAME_CAP` overrides it).
+the port sets BozoEngine's `palConsole` (fields at 50 Hz for mode 0, as for mode 3).
+
+The game flips every second field: its vblank handler `0x442fb0` counts vblanks up to a minimum of 2 (`gp-0x6850`)
+before it flips, at the title and in play alike (`SHINO_TRACE_VBLANK=<flip>` prints the count). On the console it runs
+at 25 frames a second; a host frame (one flip) spans two fields of the game's time (11.8M EE cycles). The window used to
+hold the game to 50 frames a second, which ran it at twice its speed wherever the port kept up (the boot, the menus).
+It now holds each frame to the fields it spanned (`runtime/shino_main.cpp`, the cap 50 / fields: 25 in this game);
+`PS2X_FRAME_CAP` overrides it.

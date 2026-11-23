@@ -22,6 +22,8 @@ namespace shino
     {
         // GIF packets (tags and their data), as the GIF would take them from PATH3.
         void packets(const uint8_t *data, uint32_t bytes);
+        // IMAGE data (whole quadwords) for the host-to-local transfer under way.
+        void imageBytes(const uint8_t *data, uint32_t bytes);
         // One quadword of VIF1 DIRECT data (PATH2).
         void directQuadword(const uint8_t *quadword);
         // A VU1 XGKICK (PATH1): the packets at `address` (quadwords) of VU1 data memory, up to EOP.
@@ -29,6 +31,24 @@ namespace shino
         // The display flip: the frame drawn so far is published (DISPFB1 of the buffer shown); the game frame ends.
         void flip(Runtime *rt, R5900Context *ctx, uint64_t dispfb, uint64_t display);
         void report();
+    }
+
+    // SHINO_PROFILE=1: the game thread's time by part, exclusive (a scope pauses the one it interrupts), printed every
+    // 250 flips with the flips' rate; "other" is the recompiled code, the libraries and the host.
+    namespace prof
+    {
+        enum Bucket : int { Other, Vu1, Vu0, Gs, Decode, Submit, Vif, Upload, Count };
+        bool on();
+        void enter(Bucket b, Bucket &previous);
+        void leave(Bucket previous);
+        void flip();
+        struct Scope
+        {
+            explicit Scope(Bucket b) : active(on()) { if (active) enter(b, previous); }
+            ~Scope() { if (active) leave(previous); }
+            bool active;
+            Bucket previous = Other;
+        };
     }
 
     // PATH3 held behind VIF1's MSKPATH3 (runtime/shino_render.cpp): the GIF chain sent with a VIF1 chain goes to the
