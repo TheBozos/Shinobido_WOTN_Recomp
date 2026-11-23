@@ -156,7 +156,7 @@ jump: 3 to 5 key ons every 50 frames), few while he stands or walks. In the paus
 two voices hold their last sample (a constant level in a capture, as the SPU2's would). Loud effects over the music
 clip now and then (up to about 100 samples a second).
 
-Debug switches: `SHINO_TRACE_SOUND=1` (key ons, voices playing and the peak every 50 frames), `SHINO_TRACE_RPC=1` (the
+Debug switches: `SHINO_TRACE_SOUND=<n>` (every n frames: key ons, voices playing, the peak; each core's input, its volumes, the master volumes and the mix switches), `SHINO_TRACE_RPC=1` (the
 drivers' RPC calls by service and command every 250 frames; command | 1 counts the calls whose send buffer is not all
 zeros), `SHINO_TRACE_RPC_DUMP=<frame>` with `SHINO_TRACE_RPC_SERVICE=<hex>` (16 calls' send buffers from that frame).
 `--wav FILE` records the mix in the game's own time (headless too).
@@ -183,6 +183,10 @@ The port's settings in BozoEngine:
 - `useBlockTransStatusAhead` (the sound host, `runtime/shino_audio.cpp`): libsd's `sceSdBlockTransStatus` reports the
   transfer address one 1 KiB block ahead of the sample playing, as the SPU2 does: at the play position itself the
   player's ring read as empty once full, and was overwritten.
+
+The Acquire logo (`ACQUIRE.PSS`) is silent on the disc: its sound track (48 kHz stereo, 512-byte interleave, as
+`NINJA.PSS`'s) is 895K samples of zero. The port feeds it to the SPU2's input like the others (core 0's input, its
+volume 0x7fff, the master 0x3332); `NINJA.PSS`'s track peaks at 32387 and plays.
 
 `SHINO_SKIP_MOVIES=1` answers `0x327130` as a finished playback (each movie skipped); `SHINO_TRACE_MOVIE=1` prints
 the sound feed (`0x672540`: its EE ring bytes, the IOP buffer's write position, the bytes sent) every 25 fields.
@@ -262,7 +266,7 @@ time a flip, exclusive; `SHINO_RATE=1` the rate alone):
 - 3D: scissor, FBMSK and the offscreen draws (render-to-texture) are not drawn; then native draws at the game's model
   functions.
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
-  effects' voices, not what they sound like); the Acquire logo's short sting is silent.
+  effects' voices, not what they sound like).
 
 ## PAL pacing
 

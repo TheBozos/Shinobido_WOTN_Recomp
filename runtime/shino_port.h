@@ -12,7 +12,7 @@ namespace shino
     void installAudio(bozo::libs::Libraries &libraries, uint8_t *eeRam);
     // The render scheduler and the vblank flip, native (runtime/shino_render.cpp).
     void installRender(bozo::port::Registry &registry);
-    // SHINO_TRACE_SOUND=1: the mixer's key ons, voices playing and peak every 50 frames (runtime/shino_audio.cpp).
+    // SHINO_TRACE_SOUND=<n>: every n frames, the mixer's key ons, voices playing, peak, input and volumes (runtime/shino_audio.cpp).
     void traceSound(uint64_t frame);
     // What the frames held, for the runner's report.
     void reportRender();

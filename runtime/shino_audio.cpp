@@ -7,6 +7,7 @@
 #include "bozo/audio/mixer.h"
 #include "bozo/libs/guest.h"
 #include "bozo/libs/libraries.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -74,13 +75,20 @@ namespace shino
             }
         }
         static const bool on = std::getenv("SHINO_TRACE_SOUND") != nullptr;
-        if (!on || !g_mixer || frame % 50 != 0)
+        static const uint64_t every = std::getenv("SHINO_TRACE_SOUND") ? std::max(1ull, std::strtoull(std::getenv("SHINO_TRACE_SOUND"), nullptr, 10)) : 50;
+        if (!on || !g_mixer || frame % every != 0)
             return;
         const auto s = g_mixer->stats();
         static uint64_t keyOnsBefore = 0;
-        std::printf("[shino:sound] frame %llu: %llu key ons, %d voices playing, peak %d\n",(unsigned long long)frame,
+        std::printf("[shino:sound] frame %llu: %llu key ons, %d voices playing, peak %d", (unsigned long long)frame,
                     (unsigned long long)(s.keyOns - keyOnsBefore), s.voicesPlaying, s.peak);
         keyOnsBefore = s.keyOns;
+        // The input (the movies' PCM) and the volumes and mixes it goes through, per group (core).
+        for (int g = 0; g < 2; ++g)
+            std::printf("; core %d input %d vol %04x/%04x master %04x/%04x mix %03x", g, int(g_mixer->inputPlaying(g)),
+                        g_mixer->inputVolume(g, 0), g_mixer->inputVolume(g, 1), g_mixer->masterVolume(g, 0),
+                        g_mixer->masterVolume(g, 1), g_mixer->mix(g));
+        std::printf("\n");
     }
 
     void installAudio(bozo::libs::Libraries &libraries, uint8_t *)
