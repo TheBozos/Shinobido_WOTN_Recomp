@@ -556,8 +556,8 @@ The mission's state (the object at `gp-0x6b14`) holds at +0x2b0 its mission (+0x
 `GetEventTiming` reads; `0x373c40` sets it, `0x373fd0` raises it with its rules) and at +0x440 the completion part
 (+0 the mission data: +0x86 its type, +0x64 how many of it are needed; +0x16 / +0x17 met, +0x18, +0x19 flags). A
 flow object (`0x101b4e0` here, `0x180470` its state machine at +0xc, 23 states) checks it each frame (`0x17ee10`):
-+0x16 and +0x17 both set leads to state 12 ("Mission Complete!") or, for the missions with a delivery prompt, 15
-("Send to the recipient right now?"). Events seen: 24 the item delivered or carried out (from `0x374058` and
++0x16 and +0x17 both set leads to state 12 (the mission over: "Mission Complete!", or "Mission Failed!" when a failure
+condition was met) or, for the missions with a delivery prompt, 15 ("Send to the recipient right now?"). Events seen: 24 the item delivered or carried out (from `0x374058` and
 `0x31b414`), 19 the ninja found by the target's group (`0x31adb0`, from the guards' brains in state 5: they join the
 find list +0x114), 21 the target dead, 14 the end of "Get those Bow Designs". The completion code by type (`0x377650`'s
 table at `0x60f560`; the exit markers' `0x3777d0`) has no case for type 16, the reconnaissance missions: what completes
@@ -575,6 +575,16 @@ weaken the enemy", "Steal back the jewel", "Deliver the Bow Designs", "Get those
 Designs" (the goal teleport) and "Get those Bow Designs" (item, then goal) play to "Mission Complete!". The two
 "Steal" missions (type 10) are not done: their item is where the teleport cannot reach it (inside a building), and at
 the exit the game asks to quit.
+
+Further along the chain (`build/hideout6.state` at 33750 after "Deliver the Bow Designs": 100%, 3,775 Mon): the
+Hideout announces "I feel the presence of enemies in my garden... I must defend my home." To Garden, Defend ("I hear
+enemy footsteps in the garden... Shall I have some fun?") starts a garden defense: barbarians come in ("Remaining:
+12"), "A barbarian has fled!" when one escapes; killing them all gives "Mission Complete!" and the news pages. From
+there (`build/hideout7.state` at 37800) the Hideout offers "Akashiya, the Merchant of Death" (Assassination: 99%),
+"Infiltrate Fudo Castle" again (78 Mon), "Honcho Shimoyashiki is in danger" (Total Destruction: 99%) and "I have no
+more use for Akashiya, the merchant" (Assassination for another lord): played with the kill loop, which kills every
+character, that one ends in "Mission Failed!" (0%, "What are you doing? Are you on the same side as Akame??"), the
+game's own failure (event 30), not the port's.
 
 ## Next
 
