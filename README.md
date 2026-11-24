@@ -26,8 +26,9 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 ## Status
 
 **The game reaches 3D gameplay natively (2026-11-23).** From "New Game" it plays the opening in-engine cutscene at
-Utakata Castle, then hands over control: the ninja walks the castle grounds with his HUD (health, the detection eye, the
-compass), the tutorial messages and the pause menu. Before that, it boots at full speed through "Sony Computer
+Utakata Castle, then hands over control: the ninja runs and climbs through the castle grounds with his HUD (health, the
+detection eyes, the compass), the tutorial messages and the pause menu, and the guards who spot him fight him (2026-11-24:
+nine minutes of scripted play from there, without a fault). Before that, it boots at full speed through "Sony Computer
 Entertainment Europe presents" and the memory card check to the title screen. Everything on screen is drawn from the
 game's own data:
 - the game's render scheduler is replaced natively;
@@ -61,8 +62,8 @@ In progress:
 | The intro movie, decoded natively | The intro movie: the rooftops at night |
 | ![The main menu](docs/screenshots/2026-11-23-main-menu.png) | ![The opening cutscene](docs/screenshots/2026-11-23-opening-cutscene.png) |
 | The main menu ("New Game", on fresh memory cards) | The opening in-engine cutscene at Utakata Castle |
-| ![Gameplay at the castle](docs/screenshots/2026-11-23-gameplay-castle.png) | |
-| Gameplay: the ninja in the castle grounds, with his HUD | |
+| ![Gameplay at the castle](docs/screenshots/2026-11-23-gameplay-castle.png) | ![Combat](docs/screenshots/2026-11-24-combat.png) |
+| Gameplay: the ninja in the castle grounds, with his HUD | Combat: a guard has spotted him (the detection eyes) |
 
 ## Goal
 

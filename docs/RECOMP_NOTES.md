@@ -274,6 +274,18 @@ cutscene and play:
   are all masked is not written (`Material::colourMask`).
 - **Scissor**: never narrower than the frame in these scenes. **Offscreen draws** (into a buffer never displayed): none.
 
+## Play past the first area (2026-11-24)
+
+From a save state at frame 5200 (`--save-state FILE --save-state-at 5200` on a New Game run; the game uploads its
+textures again each frame, so the state's missing GS memory is back after one frame), scripted runs (`--load-state`,
+the pad script and `--frames` in the state's own frame numbers) went through the castle grounds: running, wall climbs,
+jumps, the second tutorial message, guards that spot the ninja and fight him, his health going down. 13,700 frames
+headless (about nine minutes of play) and 14,000 in the window: no fault, no unknown device access, no unanswered
+call. Play holds 25 frames a second, down to 15 to 18 for a while near several guards.
+
+To look at with a reference: a light disc under a crouching guard (dust, or a shadow blended the wrong way?), and the
+strong yellow light on some walls.
+
 ## Next
 
 - Speed: the castle's load and the cutscene's start (frames 1500 to 1900 of the New Game run) at 15 frames a second.
