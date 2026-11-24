@@ -586,6 +586,15 @@ more use for Akashiya, the merchant" (Assassination for another lord): played wi
 character, that one ends in "Mission Failed!" (0%, "What are you doing? Are you on the same side as Akame??"), the
 game's own failure (event 30), not the port's.
 
+Next in the chain (`build/hideout8.state` at 46100, after "Akashiya, the Merchant of Death": 4,707 Mon): "Defeat
+Kagekatsu Nikko, Akame's samurai general" (Assassination, Kongo Pass: 99%), "Protect Kagekatsu Nikko, the samurai
+general" (Guard: left alone in a battle on a ship's deck, the general dies, "Mission Failed!", the game's outcome),
+"The stone that Akame is hiding" (Thievery, Fudo Castle: the chest taken and carried out, "Mission Complete!", then a
+story scene, the flow's state 19: Akame and the stone's light) and "Get the mercenary list" (Thievery: 100%). The
+item teleport now turns the ninja toward the item (his world matrix's rows: +0x10 right, +0x20 up, +0x30 forward) a
+little short of it, on its floor: one Grab (Triangle) takes it; a second press drops it. "Steal the food and weaken
+the enemy" and "Steal back the jewel" (type 10) are still not done: nothing to take where their item's position is.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is

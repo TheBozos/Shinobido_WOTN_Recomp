@@ -439,7 +439,7 @@ namespace shino::cheats
                     else
                         fx = 1.0f, fz = 0.0f;
                     to[0] -= fx * 1.4f;
-                    to[1] = place.y + 2.0f;
+                    to[1] = place.y + 0.5f;
                     to[2] -= fz * 1.4f;
                 }
                 if (g_request.kind == Kind::Enemy) // just behind him, the way he faces
@@ -473,6 +473,19 @@ namespace shino::cheats
             {
                 for (uint32_t k = 0; k < 3; ++k)
                     writeF(ram, object + kPosition + 4 * k, to[k]);
+                if (g_request.kind == Kind::Item) // turned toward it: his matrix's rows x (+0x10), y, z (+0x30, forward)
+                {
+                    float dx = g_item.x - to[0], dz = g_item.z - to[2];
+                    const float length = std::sqrt(dx * dx + dz * dz);
+                    if (length > 1e-3f)
+                    {
+                        dx /= length, dz /= length;
+                        const float rows[3][3] = {{dz, 0, -dx}, {0, 1, 0}, {dx, 0, dz}};
+                        for (uint32_t r = 0; r < 3; ++r)
+                            for (uint32_t k = 0; k < 3; ++k)
+                                writeF(ram, object + kMatrix + 16 * r + 4 * k, rows[r][k]);
+                    }
+                }
                 char text[96];
                 std::snprintf(text, sizeof text, "Teleported to %.1f, %.1f, %.1f.", to[0], to[1], to[2]);
                 setStatus(text);
@@ -494,6 +507,5 @@ namespace shino::cheats
         p.maxHealth = static_cast<int32_t>(read32(ram, object + kMaxHealth));
         p.enemies = enemies;
         p.enemiesAlive = alive;
-        (void)kMatrix;
     }
 } // namespace shino::cheats
