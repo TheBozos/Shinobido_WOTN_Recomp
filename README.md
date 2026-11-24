@@ -129,7 +129,8 @@ name (`Shinobido - Way of the Ninja (Europe) (En,Fr,De,Es,It).iso`); give anothe
 configure with `-DSHINO_ISO=FILE`. `scripts/build_runtime.sh -DSHINO_WINDOW=OFF` builds the headless runner alone.
 
 Save states: F5 saves, F7 loads, F6 / Shift+F6 pick the slot (0-9). From the command line:
-`--save-state FILE --save-state-at N` and `--load-state FILE`.
+`--save-state FILE --save-state-at N` and `--load-state FILE`. A state holds the sound too (since 2026-11-24:
+older states do not load).
 
 Cheats: the settings window's Cheats tab (F2): infinite health, one-hit kills, guards that never spot the ninja (they
 still hear him and go to look), a teleport (to a point, forward, back or up from where the ninja stands) and four

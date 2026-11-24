@@ -36,6 +36,24 @@ int main(int argc, char **argv)
     windowOptions.title = "Shinobido: Way of the Ninja - BozoEngine";
     windowOptions.width = 960;
     windowOptions.height = 720;
+    // SHINO_CAPTURE_FRAMES=<first>:<last>:<step> or <frame>,<frame>...: the window's picture at those game frames (the
+    // pad script's frames), as frame_<n>.png in PS2X_CAPTURE_WINDOW_DIR (play tests: what the screen shows where).
+    if (const char *e = std::getenv("SHINO_CAPTURE_FRAMES"))
+    {
+        unsigned long long first, last, step;
+        if (std::sscanf(e, "%llu:%llu:%llu", &first, &last, &step) == 3 && step > 0)
+            for (unsigned long long f = first; f <= last; f += step)
+                windowOptions.captureFrames.push_back(f);
+        else
+            for (const char *p = e; *p;)
+            {
+                char *next;
+                windowOptions.captureFrames.push_back(std::strtoull(p, &next, 10));
+                if (next == p)
+                    break;
+                p = *next ? next + 1 : next;
+            }
+    }
 #endif
     options.elf = SHINO_DEFAULT_ELF;
     options.iso = SHINO_DEFAULT_ISO;
@@ -104,6 +122,7 @@ int main(int argc, char **argv)
     bozo::host::FreeHost host(options);
     bozo::ee::Dispatcher d(host);
     shino::installAudio(host.libraries(), d.runtime().memory.ram());
+    shino::installState(*host.stateSections());
     // The movies (libmpeg native): the SDK's results, pictures as soon as decoded (the player queues them and shows
     // them from its own vblank handler), and a read-ahead long enough for the audio the player waits for before its
     // first picture (the first audio packet comes after 14 pictures; it wants 0x6000 bytes).
@@ -229,6 +248,18 @@ int main(int argc, char **argv)
                     std::printf("[shino:poke] frame %llu: %g %g %g at %x\n", (unsigned long long)f, v[0], v[1], v[2], address);
                 }
                 p = e ? std::strchr(e, ';') : nullptr;
+                if (p)
+                    ++p;
+            }
+        // SHINO_TELEPORT_AT=<frame>:<x>,<y>,<z>[;...]: teleports at those frames (play tests: a place to look at).
+        if (static const char *e = std::getenv("SHINO_TELEPORT_AT"); e)
+            for (const char *p = e; p && *p;)
+            {
+                unsigned long long at;
+                float v[3];
+                if (std::sscanf(p, "%llu:%f,%f,%f", &at, &v[0], &v[1], &v[2]) == 4 && at == f)
+                    shino::cheats::teleportTo(v[0], v[1], v[2]);
+                p = std::strchr(p, ';');
                 if (p)
                     ++p;
             }

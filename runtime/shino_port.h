@@ -2,6 +2,7 @@
 #pragma once
 #include "bozo/libs/libraries.h"
 #include "bozo/port.h"
+#include "bozo/state.h"
 #include <cstdint>
 
 namespace shino
@@ -10,6 +11,8 @@ namespace shino
     void install(Runtime &rt, bozo::port::Registry &registry);
     // The IOP sound modules (runtime/shino_audio.cpp): module loads, SIF transfers and the mixer.
     void installAudio(bozo::libs::Libraries &libraries, uint8_t *eeRam);
+    // The port's save-state section (runtime/shino_audio.cpp): the sound modules' IOP host.
+    void installState(bozo::state::Sections &sections);
     // The render scheduler and the vblank flip, native (runtime/shino_render.cpp).
     void installRender(bozo::port::Registry &registry);
     // SHINO_TRACE_SOUND=<n>: every n frames, the mixer's key ons, voices playing, peak, input and volumes (runtime/shino_audio.cpp).

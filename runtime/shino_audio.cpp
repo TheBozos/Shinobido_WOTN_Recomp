@@ -123,4 +123,14 @@ namespace shino
             return -1;
         };
     }
+
+    // Shinobido's save-state section: what the engine's own sections do not hold, the sound modules' IOP host (its
+    // memory, tasks, RPC servers, libsd and the mixer). Without it a loaded state kept the IOP as it was: silent, and
+    // the RPC servers the modules registered gone, so the next sceSdRemote went unanswered (a movie played after a
+    // load waited for its sound for ever). The game sends its textures, VU programs and VIF state again each frame.
+    void installState(bozo::state::Sections &sections)
+    {
+        sections.add({"shino", [](bozo::state::Archive &a) { sound->serialize(a); },
+                      [] { return sound ? sound->unsaveable() : std::string(); }});
+    }
 } // namespace shino

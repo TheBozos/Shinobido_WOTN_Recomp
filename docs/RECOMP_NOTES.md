@@ -467,6 +467,23 @@ stimuli (144) is dropped, and his health stays 100, where without the cheat the 
 9350. Unchanged with the cheats off (the boot's checksums, 3100 frames). The tab is drawn only in the window (not looked
 at yet).
 
+## Save states and the sound (2026-11-24)
+
+A loaded state left the sound modules' IOP host as it was (the port never gave it to the state): silent from the
+load on (no key on, master volume 0), and the RPC servers the modules had registered gone. The EE's calls to them
+were answered with nothing, and nothing showed it until a movie played: `S126.PSS` (a story movie a teleport set
+off) waits for its sound buffer through `sceSdRemote` (`0x2d5080`, SDRDRV's `0x80000701`). Its block transfer
+(`0x80e0`) never reached libsd, so `sceSdBlockTransStatus` (`0x8100`) never moved, the player's EE ring stayed full
+and the demux spun (`demuxOn`) with no frame ended for good, 22 pictures in. The port's state section `shino`
+(`runtime/shino_audio.cpp`) now holds the IOP host, as Onimusha's does. From a state saved at frame 1500 (the title),
+the music plays on after a load (2 voices, master 0x3fff) where it was silent. States saved before this have no
+`shino` section and do not load.
+
+Play tests: `SHINO_CAPTURE_FRAMES=<first>:<last>:<step>` (or a list) saves the window's picture at those game frames
+into `PS2X_CAPTURE_WINDOW_DIR`; `SHINO_TELEPORT_AT=<frame>:<x>,<y>,<z>;...` teleports at those frames. With
+`PS2X_FRAME_CAP=0` the window runs as fast as it can. A fall from 400 units above the grounds kills the ninja whatever
+his health (the game's own fall, `Cut_PlayerFall`): infinite health keeps the number, not him.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
