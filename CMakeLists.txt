@@ -139,7 +139,7 @@ endif()
 
 # The game in a window (SDL3, OpenGL 3.3): the same port, the PC's pads and sound.
 if(SHINO_WINDOW)
-  add_executable(shinobido runtime/shino_main.cpp ${shino_runtime_sources})
+  add_executable(shinobido runtime/shino_main.cpp runtime/app/shino_cheats_ui.cpp ${shino_runtime_sources})
   target_link_libraries(shinobido PRIVATE shino_game shino_vu1_code bozo_host bozo_app)
   target_include_directories(shinobido PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${shino_audio_gen})
   add_dependencies(shinobido shino_native_audio)

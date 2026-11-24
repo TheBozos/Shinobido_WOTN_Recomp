@@ -6,11 +6,13 @@
 #include "bozo/ee/dispatcher.h"
 #include "bozo/host/free_host.h"
 #include "bozo/port.h"
+#include "shino_cheats.h"
 #include "shino_functions.h"
 #include "shino_port.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <string>
 #include <vector>
@@ -138,6 +140,63 @@ int main(int argc, char **argv)
             pacer.setCap(50u / spanned);
         }
         lastFrameCycles = now;
+        // SHINO_DUMP_RAM_AT=<frame>,<frame>...: the EE's RAM at each of those frames' end, as build/ram_<frame>.bin (the
+        // memory searches that found the cheats' fields, docs/RECOMP_NOTES.md).
+        if (static const char *at = std::getenv("SHINO_DUMP_RAM_AT"); at)
+            for (const char *p = at; *p;)
+            {
+                char *next = nullptr;
+                const uint64_t want = std::strtoull(p, &next, 10);
+                if (want == f)
+                {
+                    const std::string name = "build/ram_" + std::to_string(f) + ".bin";
+                    if (FILE *file = std::fopen(name.c_str(), "wb"))
+                    {
+                        std::fwrite(d.runtime().memory.ram(), 1, 0x2000000u, file);
+                        std::fclose(file);
+                    }
+                }
+                if (!next || next == p)
+                    break;
+                p = *next ? next + 1 : next;
+            }
+        // SHINO_TRACE_PLAYER=<every>: the player's object (the pointer at gp-0x6a0c, 0x625d64), its first 8 KB, every n
+        // frames into build/player_trace.bin (frame, then the bytes): the search for its fields.
+        if (static const char *every = std::getenv("SHINO_TRACE_PLAYER"); every && f % std::max(1ull, std::strtoull(every, nullptr, 10)) == 0)
+        {
+            static FILE *trace = std::fopen("build/player_trace.bin", "wb");
+            const uint8_t *ram = d.runtime().memory.ram();
+            uint32_t object;
+            std::memcpy(&object, ram + 0x625d64u, 4);
+            if (trace && object)
+            {
+                const uint64_t frame = f;
+                std::fwrite(&frame, 8, 1, trace);
+                std::fwrite(ram + (object & 0x1FFFFFFu), 1, 0x2000u, trace);
+                std::fflush(trace);
+            }
+        }
+        // SHINO_POKE=<frame>:<address>:<x>,<y>,<z>[;...]: three floats written at a frame's end (the search for the
+        // player's position: does writing there move him).
+        if (static const char *poke = std::getenv("SHINO_POKE"); poke)
+            for (const char *p = poke; p && *p;)
+            {
+                char *e = nullptr;
+                const uint64_t at = std::strtoull(p, &e, 10);
+                const uint32_t address = static_cast<uint32_t>(std::strtoul(e + 1, &e, 16));
+                float v[3] = {};
+                for (int k = 0; k < 3 && e && *e; ++k)
+                    v[k] = std::strtof(e + 1, &e);
+                if (at == f)
+                {
+                    std::memcpy(d.runtime().memory.ram() + (address & 0x1FFFFFFu), v, sizeof(v));
+                    std::printf("[shino:poke] frame %llu: %g %g %g at %x\n", (unsigned long long)f, v[0], v[1], v[2], address);
+                }
+                p = e ? std::strchr(e, ';') : nullptr;
+                if (p)
+                    ++p;
+            }
+        shino::cheats::apply(d.runtime().memory.ram()); // the frame boundary: the game thread
         pacer.frameEnd();
         shino::traceSound(f);
         if (f % 60 == 0)
@@ -224,6 +283,7 @@ int main(int argc, char **argv)
         game.saveState = [&](int slot) { host.requestSave(bozo::app::stateSlotPath(slot)); };
         game.loadState = [&](int slot) { host.requestLoad(bozo::app::stateSlotPath(slot)); };
         host.onStateMessage = [](bool, const std::string &message) { bozo::app::notify(message); };
+        shino::cheats::registerMenu(); // the Cheats tab (F2)
         result = bozo::app::runWindow(windowOptions, game, &devices);
     }
     else

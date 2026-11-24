@@ -418,6 +418,27 @@ it anamorphic, so the port's 4:3 window would squeeze it; a 16:9 window for that
 To look at with a reference: a light disc under a crouching guard (dust, or a shadow blended the wrong way?), and the
 strong yellow light on some walls.
 
+## Cheats (2026-11-24)
+
+`runtime/shino_cheats.cpp`, applied at each frame's end on the game thread; the window's Cheats tab (F2,
+`runtime/app/shino_cheats_ui.cpp`), or `SHINO_CHEAT_HEALTH=1` and `SHINO_TELEPORT=<x>,<y>,<z>` without one. The
+executable is stripped, so the fields were found in the game's memory, from the frame-5200 save state and the scripted
+play (`SHINO_DUMP_RAM_AT=<frame>,...` writes the RAM at those frames to `build/ram_<frame>.bin`,
+`SHINO_TRACE_PLAYER=<n>` the player's object every n frames to `build/player_trace.bin`, `SHINO_POKE=<frame>:<address>:
+<x>,<y>,<z>` writes three floats):
+- **The player's object**: the pointer at `gp-0x6a0c` (`0x625d64`; `gp-0x6a08` and `gp-0x6308` hold it too). Its first
+  word points at itself.
+- **His position**: the translation of his world matrix (+0x10: rows x, y, z, then the translation at +0x40). Written
+  there, the game moves him on from it; the copies at +0x140, in the draw list (a 48-byte record a model) and in two
+  more places are the last frame's, written from it. Found by the floats that move steadily while the script holds UP,
+  then poked one by one: only +0x40 moved him. The z row (+0x30) is the way he faces. The camera is the matrix the
+  pointer at `gp-0x6d44` gives (its translation also at `0x679c70`); `0x521ba0`, 100 units ahead of it, is not him.
+- **His health**: +0x64c, an int, out of +0x650 (100 in the first mission): the one field of his object that only went
+  down, 100 to 5, through the scripted fights (from frame 9350).
+Checked headless: `SHINO_TELEPORT=60,0,250` from the save state puts him there and he walks on; with
+`SHINO_CHEAT_HEALTH=1` his health stays 100 through the fights that took it to 5. The tab is drawn only in the window
+(not looked at yet).
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is

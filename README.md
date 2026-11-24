@@ -131,6 +131,10 @@ configure with `-DSHINO_ISO=FILE`. `scripts/build_runtime.sh -DSHINO_WINDOW=OFF`
 Save states: F5 saves, F7 loads, F6 / Shift+F6 pick the slot (0-9). From the command line:
 `--save-state FILE --save-state-at N` and `--load-state FILE`.
 
+Cheats: the settings window's Cheats tab (F2): infinite health, a teleport (to a point, forward, back or up from where
+the ninja stands) and four saved positions to go back to. Without a window: `SHINO_CHEAT_HEALTH=1`,
+`SHINO_TELEPORT=<x>,<y>,<z>`.
+
 ### Windows
 
 The same scripts run in an MSYS2 **UCRT64** shell, with MSYS2's GCC (MSVC is not supported for this port).

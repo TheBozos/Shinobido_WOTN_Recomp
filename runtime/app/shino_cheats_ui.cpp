@@ -1,0 +1,73 @@
+// The window's Cheats tab (F2, beside Controls and Video): ImGui widgets for shino_cheats.h. Only in the window build.
+#include "shino_cheats.h"
+
+#include "bozo/app/settings_tabs.h"
+#include "imgui.h"
+
+#include <string>
+
+namespace shino::cheats
+{
+    void registerMenu()
+    {
+        bozo::app::ui::registerTab("Cheats", [] {
+            bool health = enabled(Cheat::InfiniteHealth);
+            if (ImGui::Checkbox("Infinite health", &health))
+                setEnabled(Cheat::InfiniteHealth, health);
+            ImGui::TextDisabled("Keeps the ninja's health at its maximum.");
+
+            ImGui::SeparatorText("Teleport");
+            const Player p = player();
+            if (p.valid)
+                ImGui::Text("Now: %.1f, %.1f, %.1f (health %d / %d)", p.x, p.y, p.z, p.health, p.maxHealth);
+            else
+                ImGui::TextDisabled("The ninja is not in play (a menu, a movie, a load).");
+            static float target[3] = {0, 0, 0};
+            if (ImGui::Button("Here") && p.valid)
+            {
+                target[0] = p.x;
+                target[1] = p.y;
+                target[2] = p.z;
+            }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(300);
+            ImGui::InputFloat3("##target", target, "%.1f");
+            ImGui::SameLine();
+            if (ImGui::Button("Go"))
+                teleportTo(target[0], target[1], target[2]);
+            static float step = 50.0f;
+            ImGui::SetNextItemWidth(120);
+            ImGui::InputFloat("##step", &step, 10.0f, 50.0f, "%.0f");
+            ImGui::SameLine();
+            if (ImGui::Button("Forward"))
+                teleportBy(step, 0.0f);
+            ImGui::SameLine();
+            if (ImGui::Button("Back"))
+                teleportBy(-step, 0.0f);
+            ImGui::SameLine();
+            if (ImGui::Button("Up"))
+                teleportBy(0.0f, step);
+            ImGui::TextDisabled("Forward and back go the way the ninja faces; up lifts him (he falls back, onto a roof if one is under him).");
+
+            ImGui::SeparatorText("Saved positions");
+            for (int slot = 0; slot < kSlots; ++slot)
+            {
+                ImGui::PushID(slot);
+                if (ImGui::Button("Save"))
+                    savePosition(slot);
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!hasSavedPosition(slot));
+                if (ImGui::Button("Go back"))
+                    loadPosition(slot);
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::Text("Slot %d", slot + 1);
+                ImGui::PopID();
+            }
+            ImGui::TextDisabled("A teleport is made at the next frame in play; the camera follows a moment later.");
+            const std::string s = status();
+            if (!s.empty())
+                ImGui::TextWrapped("%s", s.c_str());
+        });
+    }
+} // namespace shino::cheats
