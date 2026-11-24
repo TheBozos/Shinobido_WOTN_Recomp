@@ -16,6 +16,8 @@ namespace shino
     void traceSound(uint64_t frame);
     // What the frames held, for the runner's report.
     void reportRender();
+    // The frame-end wait's passes and skips (runtime/shino_port.cpp).
+    void reportWait();
     // A VIF0 source chain (TTE: its tags' VIF codes too), its codes read into the port's VU0 (vif::codes0).
     void vif0Chain(uint8_t *rdram, Runtime *rt, uint32_t tadr);
 

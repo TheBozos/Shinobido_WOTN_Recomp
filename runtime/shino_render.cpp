@@ -414,6 +414,7 @@ namespace shino
                     (unsigned long long)g_counts.calls);
         gs::report();
         vif::report();
+        reportWait();
     }
 
     void installRender(bozo::port::Registry &r)

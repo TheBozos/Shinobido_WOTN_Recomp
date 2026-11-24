@@ -348,6 +348,22 @@ The game thread's CPU time a frame (headless): at the load 32 ms before (the VU1
 cutscene 18, about 7.5. The GS translator and VIF take about 5 ms of the load's 17 (the VU1 about 6.5); the renderer's
 own copy of the vertices (BozoEngine's `Renderer::draw`) about 2.5%. Vertex checksums unchanged.
 
+## The frame-end wait (2026-11-24)
+
+`0x443640` ends the game's frame: after its DMA set-up it waits (`0x443728` to `0x443760`) while the frame counters
+`gp-0x6810` and `gp-0x6814` differ or the byte `gp-0x6800` is set (the vblank's handler changes them), calling the idle
+callback `gp-0x6854` each pass when there is one. Each pass charges 32 EE cycles at its checkpoint: the wait was 1.07
+billion passes over the New Game run (346,000 a frame), up to a third of the game thread's time in the menus. The
+callback is never set in this game (the port's count: none in the New Game run or in play).
+
+A native site at `0x443728` (the poll's first load, `runtime/shino_port.cpp`) makes the load, and when the loop will go
+round again with no callback, charges the clock to the next scheduled event (`Kernel::nextEvent`: the vblank's start
+or end, a native deadline), as the dispatcher does when every thread waits: the next checkpoint takes the vblank,
+which the loop would have reached pass by pass. 13,815 passes over the run instead. The vertex checksums are the same
+through the New Game run and 3,000 frames of play from the save state (`SHINO_NO_WAIT_SKIP=1` runs the loop as it
+was). The game thread's CPU time a frame: the menus 1.0 to 0.3 ms, the castle's load 14 to about 11 (headless); in
+the window the load and the cutscene hold 25 frames a second at 14 to 24 ms of the 40.
+
 ## Scissor, FBMSK, the frame as a texture (2026-11-24)
 
 `SHINO_SURVEY=1` counts the primitives by what the renderer was not doing, every 250 flips. From the boot through the
@@ -382,10 +398,8 @@ strong yellow light on some walls.
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
-  the largest part (about 1.5 ns a pair: the arithmetic and its clamping). Then: the game's frame-end wait (`0x443728`
-  to `0x443760`: it loops 32 EE cycles at a time on two counters and a flag the vblank sets, calling an idle callback;
-  about 6% of the thread), the renderer's own copy of every vertex (BozoEngine's `Renderer::draw`, about 4.5%: an
-  engine change), the primitives' assembly (`emit`, about 6%).
+  the largest part (about 1.5 ns a pair: the arithmetic and its clamping). Then the renderer's own copy of every
+  vertex (BozoEngine's `Renderer::draw`, about 4.5%: an engine change) and the primitives' assembly (`emit`, about 6%).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).
