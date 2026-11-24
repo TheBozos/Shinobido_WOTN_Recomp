@@ -278,8 +278,7 @@ can see is left out, from the control flow of the set:
 - Q's countdown, where no DIV / SQRT / RSQRT result can still be pending (forward, the longest countdown at each pair);
 - the MAC flags' history, where no FMAND / FMEQ / FMOR reads it within 4 pairs and the program goes on in the set;
 - the MAC flags themselves (and STATUS's two bits from them), where the next result replaces them before any read.
-The rarer instructions (OPMULA / OPMSUB, XGKICK, the EFU, FS*, the R register) go through the interpreter's
-functions. A branch in a delay slot, or an E bit on a branch, would go to the interpreter (none in this game).
+The rarer instructions (XGKICK, the EFU, FS*, the R register) go through the interpreter's functions. A branch in a delay slot, or an E bit on a branch, would go to the interpreter (none in this game).
 
 At run time (`runtime/shino_vu1.cpp`): a program runs in the set whose code is the one loaded at its pc, checked by
 64-pair segment and checked again only after an MPG changed the segment (`vu::segmentOk`); where the program goes on
@@ -295,8 +294,36 @@ the interpreter's. `SHINO_VU_INTERP=1` runs the interpreter alone.
 Speed: at the castle's load the VU1 takes 8 to 10 ms a frame (3.4M pairs; about 30 ms interpreted). Headless, the load
 and the cutscene's start went from 12 to 17 frames a second to 30 to 36, play from 29 to about 60. In the window, the
 load and the cutscene's start hold 24 to 25 frames a second (16 to 17 before), and play near several guards 24 to 25
-(down to 19.5 before). The GS translator (10 ms a frame at the load), VIF (6 ms), the texture decodes and uploads are
-now the larger parts.
+(down to 19.5 before). The GS translator (10 ms a frame at the load), VIF (6 ms), the texture decodes and uploads were
+then the larger parts (next section).
+
+## The GS translator and VIF, faster (2026-11-24)
+
+Measured with `SHINO_SAMPLE=<first flip>:<last flip>` (`runtime/shino_profile.cpp`: the game thread's instruction
+pointer every millisecond, written to `build/samples.txt`; for a sample in a DLL, the executable's function that
+called it) and `tools/shino_samples.py <executable>` (the samples by function, from the symbol table and the DLLs'
+exports); `SHINO_RATE=1` also prints the game thread's CPU time a flip, steadier than the rate while other programs
+load the machine. At the castle's load (flips 1600 to 2100 of the New Game run), what was found and done:
+- **getenv a VU program.** `SHINO_TRACE_PROGRAM` was read at each program's start, 1,300 a frame: 12% of the game
+  thread (Windows' getenv is slow). Read once.
+- **Textures decoded again and again** (86 a frame at the load, 37 in the cutscene): the hash that finds a texture
+  decoded before covered its buffer-width rows and 8 KB more, and the whole palette area, and was seeded with where
+  the texture is. The game streams its textures through shared areas, next to other textures and palettes that
+  change, and the same texture into different slots. The hash is now of the GS blocks the texture's pixels are in, the
+  palette's colours it uses, and what the picture depends on (format, size, TEXA), not where it is: 0.4 decodes a frame
+  at the load, none in the cutscene. The 64 textures used last are kept (a 3D frame alternates between a few between
+  uploads), and a texture's pixels are decoded by one loop per format.
+- **UNPACK** (200k vectors a frame: V2-32, V3-32, V3-8, V4-8 unsigned, CL above WL): one function per element shape,
+  the destination stepped (it was two divisions a vector).
+- **Draws**: the frame's vertex vectors kept from frame to frame (they were freed at each flip and grown again); no
+  copy of the texture's shared pointer a primitive; the frame buffer's list kept from one primitive to the next; the
+  primitive's vertices pushed one by one (a memmove call a primitive before); the vertex queue a fixed array; an
+  XGKICK's PACKED data run in the translator's own file (no call a quadword).
+- **VU1**: OPMULA / OPMSUB (the 3D's cross products) inline in the compiled code (they went through `upper()`).
+
+The game thread's CPU time a frame (headless): at the load 32 ms before (the VU1 recompiled), about 17 now; in the
+cutscene 18, about 10.5. The GS translator and VIF take about 5 ms of the load's 17 (the VU1 about 6.5); the renderer's
+own copy of the vertices (BozoEngine's `Renderer::draw`) about 2.5%. Vertex checksums unchanged.
 
 ## Scissor, FBMSK, the frame as a texture (2026-11-24)
 
@@ -331,8 +358,8 @@ strong yellow light on some walls.
 
 ## Next
 
-- Speed: the castle's load holds 24 to 25 frames a second in the window with little to spare; next the GS translator
-  and VIF (the VU1 is recompiled).
+- Speed: the castle's load takes about 17 ms of CPU a frame (40 ms at 25 frames a second); the compiled VU1 code is
+  the largest part (the VU registers kept in memory between pairs).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).

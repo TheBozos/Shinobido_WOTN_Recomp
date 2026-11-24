@@ -120,6 +120,8 @@ class Pair:
         if op < 0x3C:
             if op < 0x30 and ARITH_TABLE[op][0] >= 0:
                 self.arith(*ARITH_TABLE[op], False)
+            elif op == 0x2E:
+                self.kind = 'opmsub'
         else:
             sp = ((up >> 6) & 0x1F) << 2 | (up & 3)
             if sp <= 0x0F:
@@ -152,15 +154,18 @@ class Pair:
                 self.kind = 'abs'
             elif sp == 0x1F:
                 self.kind = 'clip'
+            elif sp == 0x2E:
+                self.kind = 'opmula'
         self.sets_mac = self.kind == 'arith' and self.fn <= 4
         # Whether the upper instruction writes the MAC flags: the arithmetic but on vf0; OPMSUB, OPMULA (upper()).
         if self.kind == 'arith':
             self.writes_mac = self.sets_mac and (self.to_acc or self.fd != 0)
-        elif self.kind != 'scalar':
-            self.writes_mac = False
+        elif self.kind == 'opmula':
+            self.writes_mac = True
+        elif self.kind == 'opmsub':
+            self.writes_mac = self.fd != 0
         else:
-            sp = ((up >> 6) & 0x1F) << 2 | (up & 3)
-            self.writes_mac = (op == 0x2E and self.fd != 0) or (op >= 0x3C and sp == 0x2E)
+            self.writes_mac = False
         # XTOP / XITOP (decoded from the lower word whatever the I bit says, as decodePair does)
         self.xtop, self.xreg = 0, 0
         if (lo >> 31) and (lo & 0x3F) >= 0x3C:
@@ -379,6 +384,10 @@ def emit_pair(img, node, out):
         w(f'        const Vec u = absv(v, {x.fs});')
     elif x.kind == 'clip':
         w(f'        const uint32_t u = clipFlags(v, {x.fs}, {x.ft});')
+    elif x.kind == 'opmula':
+        w(f'        const __m128 u = opmula(v, {x.fs}, {x.ft});')
+    elif x.kind == 'opmsub':
+        w(f'        const __m128 u = opmsub(v, {x.fs}, {x.ft}, {x.fd});')
     elif x.kind == 'scalar':
         w('        UpperResult u;')
         w(f'        upperSlow(0x{x.up:08x}u, u);')
@@ -442,6 +451,10 @@ def emit_pair(img, node, out):
         w(f'        setVf(v, {x.ft}, {x.dest}, _mm_loadu_ps(u.f));')
     elif x.kind == 'clip':
         w('        v.clip = u;')
+    elif x.kind == 'opmula': # ACC's xyz (upper() writes OPMULA's result with dest xyz)
+        w(f'        commitArith(v, true, 0, 14, {"true" if img.flags(node) else "false"}, u);')
+    elif x.kind == 'opmsub':
+        w(f'        commitArith(v, false, {x.fd}, {x.dest}, {"true" if img.flags(node) else "false"}, u);')
     elif x.kind == 'scalar':
         w('        commitSlow(u);')
     if img.push[node]:

@@ -135,6 +135,33 @@ namespace shino::vu
         }
     }
 
+    // OPMULA: ACC.xyz = fs.yzx * ft.zxy (ACC.w kept); OPMSUB: fd.xyz = ACC.xyz - fs.yzx * ft.zxy (fd.w kept). Clamped as
+    // arith() (NaN 0, the largest finite), as upper() does them lane by lane.
+    SHINO_VU_INLINE __m128 clamped(__m128 r)
+    {
+        r = _mm_and_ps(r, _mm_cmpord_ps(r, r));
+        r = _mm_min_ps(r, _mm_set1_ps(kFloatMax));
+        return _mm_max_ps(r, _mm_set1_ps(-kFloatMax));
+    }
+    SHINO_VU_INLINE __m128 keepW(__m128 xyz, const float *w4)
+    {
+        const __m128 old = _mm_loadu_ps(w4);
+        const __m128 mask = _mm_castsi128_ps(_mm_set_epi32(-1, 0, 0, 0)); // lane 3 (w)
+        return _mm_or_ps(_mm_andnot_ps(mask, xyz), _mm_and_ps(mask, old));
+    }
+    SHINO_VU_INLINE __m128 opmula(const Unit &v, uint32_t fs, uint32_t ft)
+    {
+        const __m128 s = _mm_loadu_ps(v.vf[fs].f), t = _mm_loadu_ps(v.vf[ft].f);
+        const __m128 a = _mm_shuffle_ps(s, s, _MM_SHUFFLE(3, 0, 2, 1)), b = _mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 1, 0, 2));
+        return keepW(clamped(_mm_mul_ps(a, b)), v.acc.f);
+    }
+    SHINO_VU_INLINE __m128 opmsub(const Unit &v, uint32_t fs, uint32_t ft, uint32_t fd)
+    {
+        const __m128 s = _mm_loadu_ps(v.vf[fs].f), t = _mm_loadu_ps(v.vf[ft].f);
+        const __m128 a = _mm_shuffle_ps(s, s, _MM_SHUFFLE(3, 0, 2, 1)), b = _mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 1, 0, 2));
+        return keepW(clamped(_mm_sub_ps(_mm_loadu_ps(v.acc.f), _mm_mul_ps(a, b))), v.vf[fd].f);
+    }
+
     // ITOF0/4/12/15 and FTOI0/4/12/15 (n: 0 to 3), ABS: the vector the upper instruction writes to ft; CLIP: the clip
     // flags it leaves (fs.xyz against ft.w, the previous ones shifted up). Computed before the lower instruction.
     SHINO_VU_INLINE Vec itof(const Unit &v, uint32_t fs, int n)

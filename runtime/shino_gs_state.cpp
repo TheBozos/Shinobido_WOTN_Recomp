@@ -239,7 +239,22 @@ namespace shino::gs
             float x, y, u, v, q;
             uint32_t z, rgba, fog;
         };
-        std::vector<GsVertex> g_queue; // the primitive's vertices so far
+        // The primitive's vertices so far (at most three kept: a strip's last two, a fan's first and last).
+        struct VertexQueue
+        {
+            GsVertex v[4];
+            uint32_t n = 0;
+            size_t size() const { return n; }
+            void clear() { n = 0; }
+            GsVertex *data() { return v; }
+            void push_back(const GsVertex &x) { v[n++] = x; }
+            void eraseAt(uint32_t i)
+            {
+                for (uint32_t j = i; j + 1 < n; ++j)
+                    v[j] = v[j + 1];
+                --n;
+            }
+        } g_queue;
 
         // ---- Textures -----------------------------------------------------------------------------------------
         struct Cached
@@ -250,6 +265,7 @@ namespace shino::gs
         std::unordered_map<uint64_t, Cached> g_textures;
         std::unordered_map<uint64_t, std::shared_ptr<Texture>> g_byContent; // by the hash of the bytes decoded
         uint64_t g_decodes = 0;
+        uint64_t g_lookups = 0, g_hashes = 0, g_hashedBytes = 0; // SHINO_PROFILE: lookUpTexture's work
 
         uint32_t expand16(uint32_t c, uint64_t texa)
         {
@@ -266,21 +282,27 @@ namespace shino::gs
 
         // The texture TEX0 names, decoded from the local memory (cached until a page it spans is written).
         std::shared_ptr<Texture> lookUpTexture(uint64_t tex0);
-        std::shared_ptr<Texture> texture(uint64_t tex0)
+        const std::shared_ptr<Texture> &texture(uint64_t tex0)
         {
-            // The texture the last primitive used, nothing written since: most of a frame's primitives.
-            static uint64_t lastTex0 = ~0ull, lastTexa = ~0ull, lastChanges = ~0ull;
-            static std::shared_ptr<Texture> last;
-            if (tex0 == lastTex0 && g_s.texa == lastTexa && g_changes == lastChanges && last)
-                return last;
-            last = lookUpTexture(tex0);
-            lastTex0 = tex0;
-            lastTexa = g_s.texa;
-            lastChanges = g_changes;
-            return last;
+            // The textures used lately, nothing written since (a 3D frame alternates between a few between uploads).
+            struct Recent
+            {
+                uint64_t tex0 = ~0ull, texa = ~0ull, changes = ~0ull;
+                std::shared_ptr<Texture> texture;
+            };
+            static std::array<Recent, 64> recent;
+            Recent &r = recent[(tex0 ^ (tex0 >> 14) ^ (tex0 >> 37) ^ g_s.texa) & 63u];
+            if (r.texture && r.tex0 == tex0 && r.texa == g_s.texa && r.changes == g_changes)
+                return r.texture;
+            r.texture = lookUpTexture(tex0);
+            r.tex0 = tex0;
+            r.texa = g_s.texa;
+            r.changes = g_changes;
+            return r.texture;
         }
         std::shared_ptr<Texture> lookUpTexture(uint64_t tex0)
         {
+            ++g_lookups;
             const uint32_t tbp = tex0 & 0x3FFFu, tbw = (tex0 >> 14) & 0x3Fu, psm = (tex0 >> 20) & 0x3Fu;
             const uint32_t tw = std::min<uint32_t>(1u << ((tex0 >> 26) & 0xFu), 1024u);
             const uint32_t th = std::min<uint32_t>(1u << ((tex0 >> 30) & 0xFu), 1024u);
@@ -300,12 +322,49 @@ namespace shino::gs
             if (c.texture && c.generation == generation)
                 return c.texture;
             prof::Scope timed(prof::Decode);
-            // The same bytes decoded before (a texture the game streams through a shared area, swapped back in): the
-            // raw memory it reads and its palette's, hashed.
-            const uint32_t start = tbp * 256u, length = std::min<uint32_t>(bytes, (4u << 20) - std::min(start, 4u << 20));
-            uint64_t content = bozo::hash::xxh64(memBytes() + start, length, key ^ (g_s.texa * 0x9E3779B97F4A7C15ull));
+            // The palette's colours (the 16 or 256 the texture uses).
+            std::array<uint32_t, 256> palette{};
+            const uint32_t entries = indexed ? (bpp == 4 ? 16u : 256u) : 0u;
             if (indexed)
-                content = bozo::hash::xxh64(memBytes() + ((cbp * 256u) & 0x3FFC00u), 1024, content);
+            {
+                const uint32_t offset = bpp == 4 ? csa * 16 : 0;
+                for (uint32_t i = 0; i < entries; ++i)
+                {
+                    uint32_t x, y;
+                    bozo::render::csm1Position((i + offset) & 0xFFu, x, y);
+                    const uint32_t raw = cpsm == 0x00 || cpsm == 0x01 ? readPixel(0x00, cbp, 1, x, y)
+                                                                       : expand16(readPixel(cpsm == 0x0A ? 0x0A : 0x02, cbp, 1, x, y), g_s.texa);
+                    palette[i] = cpsm == 0x01 ? (raw & 0xFFFFFFu) | 0x80000000u : raw;
+                }
+            }
+            // The same picture decoded before (a texture the game streams through a shared area, swapped back in): the
+            // bytes it reads and its palette's colours, hashed.
+            // Exactly the GS blocks (256 bytes each) the texture's pixels are in: a texture streamed in next to it, in the
+            // same pages, leaves its hash (and its decoded copy) alone.
+            // Seeded with what the decoded picture depends on besides the bytes: the format, the size, the palette's
+            // format and offset, TEXA; not where the texture is (the game streams the same texture into different slots).
+            ++g_hashes;
+            const uint64_t shape = uint64_t(psm) | uint64_t(tw) << 8 | uint64_t(th) << 20 |
+                                   (indexed ? uint64_t(cpsm) << 32 | uint64_t(csa) << 36 | uint64_t((tex0 >> 55) & 1u) << 41 : 0);
+            uint64_t content = shape * 0xC2B2AE3D27D4EB4Full ^ (g_s.texa * 0x9E3779B97F4A7C15ull);
+            {
+                const bool t32 = psm == 0x00 || psm == 0x01 || psm == 0x1B || psm == 0x24 || psm == 0x2C || psm == 0x30 || psm == 0x31;
+                const bool t16 = psm == 0x02 || psm == 0x0A || psm == 0x32 || psm == 0x3A;
+                const uint32_t bw = t32 ? 8 : t16 ? 16 : psm == 0x13 ? 16 : 32, bh = t32 || t16 ? 8 : 16;
+                const uint32_t buffer = std::max(tbw, 1u);
+                for (uint32_t by = 0; by < th; by += bh)
+                    for (uint32_t bx = 0; bx < tw; bx += bw)
+                    {
+                        const uint32_t at = t32 ? addr32(tbp, buffer, bx, by) * 4u
+                                            : t16 ? addr16(tbp, buffer, bx, by, psm == 0x0A || psm == 0x3A) * 2u
+                                            : psm == 0x13 ? addr8(tbp, buffer, bx, by)
+                                                          : addr4(tbp, buffer, bx, by) / 2u;
+                        content = bozo::hash::xxh64(memBytes() + (at & 0x3FFF00u), 256, content);
+                        g_hashedBytes += 256;
+                    }
+            }
+            if (indexed) // the colours used, not the palette area around them (other palettes change there)
+                content = bozo::hash::xxh64(palette.data(), entries * 4u, content);
             if (auto known = g_byContent.find(content); known != g_byContent.end())
             {
                 c.texture = known->second;
@@ -318,34 +377,38 @@ namespace shino::gs
             t->key = key;
             t->version = ++g_decodes;
             t->rgba.resize(size_t(tw) * th);
-            std::array<uint32_t, 256> palette{};
-            if (indexed)
+            // The texels, one loop per format (readPixel's switch out of the loop).
+            const uint32_t buffer = std::max(tbw, 1u);
+            const uint64_t texa = g_s.texa;
+            auto decode = [&](auto read) {
+                uint32_t *out = t->rgba.data();
+                for (uint32_t y = 0; y < th; ++y)
+                    for (uint32_t x = 0; x < tw; ++x)
+                    {
+                        uint32_t c32;
+                        const uint32_t p = read(x, y);
+                        if (indexed)
+                            c32 = palette[p & 0xFFu];
+                        else if (psm == 0x00)
+                            c32 = p;
+                        else if (psm == 0x01)
+                            c32 = (p & 0xFFFFFFu) | ((((texa >> 15) & 1u) && (p & 0xFFFFFFu) == 0) ? 0u : (uint32_t(texa & 0xFFu) << 24));
+                        else
+                            c32 = expand16(p, texa);
+                        *out++ = toRgba8(c32);
+                    }
+            };
+            const uint16_t *mem16 = reinterpret_cast<const uint16_t *>(g_mem.data());
+            const uint8_t *mem8 = memBytes();
+            switch (psm)
             {
-                const uint32_t entries = bpp == 4 ? 16 : 256, offset = bpp == 4 ? csa * 16 : 0;
-                for (uint32_t i = 0; i < entries; ++i)
-                {
-                    uint32_t x, y;
-                    bozo::render::csm1Position((i + offset) & 0xFFu, x, y);
-                    const uint32_t raw = cpsm == 0x00 || cpsm == 0x01 ? readPixel(0x00, cbp, 1, x, y)
-                                                                       : expand16(readPixel(cpsm == 0x0A ? 0x0A : 0x02, cbp, 1, x, y), g_s.texa);
-                    palette[i] = cpsm == 0x01 ? (raw & 0xFFFFFFu) | 0x80000000u : raw;
-                }
+            case 0x00: case 0x01: case 0x30: case 0x31: decode([&](uint32_t x, uint32_t y) { return g_mem[addr32(tbp, buffer, x, y)]; }); break;
+            case 0x02: case 0x32: decode([&](uint32_t x, uint32_t y) { return uint32_t(mem16[addr16(tbp, buffer, x, y, false)]); }); break;
+            case 0x0A: case 0x3A: decode([&](uint32_t x, uint32_t y) { return uint32_t(mem16[addr16(tbp, buffer, x, y, true)]); }); break;
+            case 0x13: decode([&](uint32_t x, uint32_t y) { return uint32_t(mem8[addr8(tbp, buffer, x, y)]); }); break;
+            case 0x14: decode([&](uint32_t x, uint32_t y) { const uint32_t a = addr4(tbp, buffer, x, y); return (uint32_t(mem8[a >> 1]) >> ((a & 1) * 4)) & 15u; }); break;
+            default: decode([&](uint32_t x, uint32_t y) { return readPixel(psm, tbp, buffer, x, y); }); break;
             }
-            for (uint32_t y = 0; y < th; ++y)
-                for (uint32_t x = 0; x < tw; ++x)
-                {
-                    uint32_t c32;
-                    const uint32_t p = readPixel(psm, tbp, std::max(tbw, 1u), x, y);
-                    if (indexed)
-                        c32 = palette[p & 0xFFu];
-                    else if (psm == 0x00)
-                        c32 = p;
-                    else if (psm == 0x01)
-                        c32 = (p & 0xFFFFFFu) | ((((g_s.texa >> 15) & 1u) && (p & 0xFFFFFFu) == 0) ? 0u : (uint32_t(g_s.texa & 0xFFu) << 24));
-                    else
-                        c32 = expand16(p, g_s.texa);
-                    t->rgba[size_t(y) * tw + x] = toRgba8(c32);
-                }
             c.texture = t;
             c.generation = generation;
             if (g_byContent.size() >= 4096)
@@ -422,6 +485,7 @@ namespace shino::gs
             uint64_t made = 0; // the material's serial (emit): batches with the same one and texture merge
         };
         std::unordered_map<uint32_t, std::vector<Batch>> g_frameDraws; // FRAME.FBP -> draws in order
+        std::vector<std::vector<Vertex>> g_spareVertices;              // the last frame's batches' storage, for the next
         std::map<std::string, uint64_t> g_survey;                      // SHINO_SURVEY
         uint32_t g_displayFbp = 0;                                     // the frame buffer shown last
         uint64_t g_prims = 0, g_offscreenPrims = 0, g_flips = 0, g_uploads = 0, g_checksum = 0xCBF29CE484222325ull;
@@ -493,7 +557,8 @@ namespace shino::gs
             const Context &c = g_s.ctx[(attrs >> 9) & 1u];
             const bool textured = (attrs >> 4) & 1u, fst = (attrs >> 8) & 1u, gouraud = (attrs >> 3) & 1u;
             const bool previousFrame = samplesPreviousFrame(c, attrs);
-            std::shared_ptr<const Texture> tex = textured && !previousFrame ? texture(c.tex0) : nullptr;
+            static const std::shared_ptr<Texture> none;
+            const std::shared_ptr<Texture> &tex = textured && !previousFrame ? texture(c.tex0) : none; // no copy a primitive
             // The texture's size: decoded, or TEX0's for the previous frame (u, v across the frame, 0 to 1)
             const float tw = tex ? float(tex->width) : previousFrame ? float(1u << ((c.tex0 >> 26) & 0xFu)) : 1.0f;
             const float th = tex ? float(tex->height) : previousFrame ? float(1u << ((c.tex0 >> 30) & 0xFu)) : 1.0f;
@@ -627,7 +692,10 @@ namespace shino::gs
             };
             static Made made;
             const uint64_t in[8] = {c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf, attrs & 0x150u, c.frame};
-            if (std::memcmp(in, made.in, sizeof(in)) != 0)
+            bool changed = false;
+            for (int k = 0; k < 8; ++k)
+                changed |= in[k] != made.in[k];
+            if (changed)
             {
                 std::memcpy(made.in, in, sizeof(in));
                 made.serial += 2;
@@ -658,27 +726,53 @@ namespace shino::gs
             }
             // Into the frame buffer's list: onto its last batch (or last two: a run of two-pass draws keeps its passes
             // and its failing pixels in one batch each) when the texture and the materials are the same.
-            auto &list = g_frameDraws[fbp];
+            // (the frame buffer's list kept from the last primitive: the lists stay in the map from frame to frame)
+            static uint32_t listFbp = ~0u;
+            static std::vector<Batch> *listOf = nullptr;
+            if (fbp != listFbp)
+            {
+                listOf = &g_frameDraws[fbp];
+                listFbp = fbp;
+            }
+            auto &list = *listOf;
             auto same = [&](const Batch &b, uint64_t serial) { return b.made == serial && b.texture == tex; };
+            // A new batch: its vertices in a vector of an earlier frame's (its storage kept: no allocation a batch).
+            auto fresh = [&](const Material &m, uint64_t serial) {
+                Batch b;
+                b.material = m;
+                b.texture = tex;
+                b.made = serial;
+                if (!g_spareVertices.empty())
+                {
+                    b.vertices = std::move(g_spareVertices.back());
+                    g_spareVertices.pop_back();
+                }
+                b.vertices.assign(out.begin(), out.end());
+                list.push_back(std::move(b));
+            };
             const size_t n = list.size();
             if (!made.twoPass || !made.drawPass)
             {
                 const Material &m = made.twoPass ? made.fail : made.pass;
                 const uint64_t serial = made.serial + (made.twoPass ? 1u : 0u);
                 if (n && same(list[n - 1], serial))
-                    list[n - 1].vertices.insert(list[n - 1].vertices.end(), out.begin(), out.end());
+                    for (const Vertex &x : out) // pushed one by one: inline, no memmove call a primitive
+                        list[n - 1].vertices.push_back(x);
                 else
-                    list.push_back(Batch{m, tex, out, serial});
+                    fresh(m, serial);
                 return;
             }
             if (n >= 2 && same(list[n - 2], made.serial) && same(list[n - 1], made.serial + 1))
             {
-                list[n - 2].vertices.insert(list[n - 2].vertices.end(), out.begin(), out.end());
-                list[n - 1].vertices.insert(list[n - 1].vertices.end(), out.begin(), out.end());
+                for (const Vertex &x : out)
+                {
+                    list[n - 2].vertices.push_back(x);
+                    list[n - 1].vertices.push_back(x);
+                }
                 return;
             }
-            list.push_back(Batch{made.pass, tex, out, made.serial});
-            list.push_back(Batch{made.fail, tex, out, made.serial + 1});
+            fresh(made.pass, made.serial);
+            fresh(made.fail, made.serial + 1);
         }
 
         void vertexKick(uint64_t xyz, uint32_t z, uint32_t fog, bool draw)
@@ -714,9 +808,9 @@ namespace shino::gs
                 emit(g_queue.data() + g_queue.size() - need[type] - (type == 5 ? 0 : 0), need[type], type, attrs);
             switch (type)
             {
-            case 2: g_queue.erase(g_queue.begin()); break;                         // line strip: keep the last
-            case 4: g_queue.erase(g_queue.begin()); break;                         // triangle strip: keep two
-            case 5: g_queue.erase(g_queue.begin() + 1); break;                     // fan: keep the first and the last
+            case 2: g_queue.eraseAt(0); break;                                    // line strip: keep the last
+            case 4: g_queue.eraseAt(0); break;                                    // triangle strip: keep two
+            case 5: g_queue.eraseAt(1); break;                                    // fan: keep the first and the last
             default: g_queue.clear(); break;
             }
         }
@@ -814,7 +908,30 @@ namespace shino::gs
         }
     }
 
-    void packed(uint32_t r, uint64_t lo, uint64_t hi)
+    namespace
+    {
+        void packedOne(uint32_t r, uint64_t lo, uint64_t hi);
+    }
+    void packed(uint32_t r, uint64_t lo, uint64_t hi) { packedOne(r, lo, hi); }
+
+    // A PACKED tag's data (loops x nreg quadwords) in VU1 data memory from quadword `at` (wrapping at 1024): the
+    // registers in turn, all in this file (no call a quadword).
+    void packedRun(const uint8_t *vuMemory, uint32_t at, uint64_t regs, uint32_t nreg, uint32_t loops)
+    {
+        for (uint32_t l = 0; l < loops; ++l)
+            for (uint32_t k = 0; k < nreg; ++k, ++at)
+            {
+                uint64_t lo, hi;
+                const uint8_t *q = vuMemory + 16 * (at & 0x3FFu);
+                std::memcpy(&lo, q, 8);
+                std::memcpy(&hi, q + 8, 8);
+                packedOne(static_cast<uint32_t>(regs >> (4 * k)) & 0xFu, lo, hi);
+            }
+    }
+
+    namespace
+    {
+    inline void packedOne(uint32_t r, uint64_t lo, uint64_t hi)
     {
         State &s = g_s;
         switch (r)
@@ -844,6 +961,8 @@ namespace shino::gs
         default: writeRegister(r, lo); break; // TEX0_1/2, CLAMP_1/2: the register's value as is
         }
     }
+
+    } // namespace
 
     void reglist(uint32_t r, uint64_t value) { writeRegister(r, value); }
 
@@ -1037,7 +1156,7 @@ namespace shino::gs
                 renderer.draw(b.material, kIdentity, b.vertices.data(), static_cast<uint32_t>(b.vertices.size()), b.texture);
                 shown += b.vertices.size() / 3;
             }
-        if (std::getenv("SHINO_TEST_QUAD")) // presentation check: a red quad over the frame
+        if (static const bool onShinoTestQuad = std::getenv("SHINO_TEST_QUAD") != nullptr; onShinoTestQuad) // presentation check: a red quad over the frame
         {
             Material m;
             m.textured = false;
@@ -1054,14 +1173,24 @@ namespace shino::gs
             if (f != fbp)
                 for (const Batch &b : list)
                     g_offscreenPrims += b.vertices.size() / 3;
-        g_frameDraws.clear();
+        // The lists emptied, kept in the map (emit keeps a pointer to the last one), their batches' vectors kept for the
+        // next frame's batches.
+        for (auto &[f, list] : g_frameDraws)
+        {
+            for (Batch &b : list)
+            {
+                b.vertices.clear();
+                g_spareVertices.push_back(std::move(b.vertices));
+            }
+            list.clear();
+        }
         renderer.publishOverlay(screen);
         renderer.endFrame();
-        if (std::getenv("SHINO_TRACE_FLIP") && g_flips % 30 == 1)
+        if (static const bool onShinoTraceFlip = std::getenv("SHINO_TRACE_FLIP") != nullptr; onShinoTraceFlip && g_flips % 30 == 1)
             std::printf("[shino:flip] %llu fbp=%x shown=%llu triangles, screen %.0fx%.0f (DISPLAY %llx), xyoffset=%llx\n",
                         (unsigned long long)g_flips, fbp, (unsigned long long)shown, screen.width, screen.height,
                         (unsigned long long)display, (unsigned long long)off);
-        if (std::getenv("SHINO_TRACE_DRAWS") && g_flips % 60 == 1)
+        if (static const bool onShinoTraceDraws = std::getenv("SHINO_TRACE_DRAWS") != nullptr; onShinoTraceDraws && g_flips % 60 == 1)
         {
             const auto draws = renderer.takeFrameDraws();
             std::printf("[shino:draws] flip %llu: lists=%u batches=%u vertices=%u enabled=%d alone=%d\n",
@@ -1069,8 +1198,16 @@ namespace shino::gs
                         int(renderer.presentsAlone()));
         }
         timed.reset();
+        if (prof::on() && g_flips % 250 == 0)
+        {
+            static uint64_t lookups = 0, hashes = 0, hashed = 0, decodes = 0;
+            std::printf("[shino:profile] textures a flip: %.0f looked up, %.0f hashed (%.0f KB), %.1f decoded\n",
+                        double(g_lookups - lookups) / 250, double(g_hashes - hashes) / 250,
+                        double(g_hashedBytes - hashed) / 250 / 1024, double(g_decodes - decodes) / 250);
+            lookups = g_lookups, hashes = g_hashes, hashed = g_hashedBytes, decodes = g_decodes;
+        }
         prof::flip();
-        if (std::getenv("SHINO_CHECKSUM") && g_flips % 500 == 0)
+        if (static const bool onShinoChecksum = std::getenv("SHINO_CHECKSUM") != nullptr; onShinoChecksum && g_flips % 500 == 0)
             std::printf("[shino:checksum] flip %llu %016llx\n",(unsigned long long)g_flips, (unsigned long long)g_checksum);
         bozo::port::frameEnd(rt, ctx);
     }

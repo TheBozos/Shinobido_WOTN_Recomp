@@ -130,8 +130,19 @@ namespace shino
                 std::printf("[shino:path1] at %03x tag %016llx regs %016llx nloop=%u flg=%u nreg=%u eop=%u\n", address & 0x3FFu,
                             (unsigned long long)lo, (unsigned long long)hi, loops, flg, nreg, unsigned((lo >> 15) & 1u));
             }
-            for (uint32_t i = 0; i <= qwords; ++i)
-                gifQuadword(g_gifPath1, vuMemory + 16 * ((address + i) & 0x3FFu));
+            gifQuadword(g_gifPath1, tag);
+            if (flg == 0 && loops) // PACKED: the data in one run (gs::packedRun)
+            {
+                uint64_t regs;
+                std::memcpy(&regs, tag + 8, 8);
+                gs::packedRun(vuMemory, address + 1, regs, nreg, loops);
+                g_qwPacked += qwords;
+                g_gifPath1.loops = 0;
+                g_gifPath1.inTag = false;
+            }
+            else
+                for (uint32_t i = 1; i <= qwords; ++i)
+                    gifQuadword(g_gifPath1, vuMemory + 16 * ((address + i) & 0x3FFu));
             address += qwords + 1;
             if ((lo >> 15) & 1u)
                 break;

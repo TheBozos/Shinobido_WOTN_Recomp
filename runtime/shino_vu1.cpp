@@ -641,6 +641,7 @@ namespace shino
         std::array<uint32_t, 32> g_regionSrc{}; // the EE address each 64 pairs of code came from
         std::map<std::pair<uint32_t, std::array<uint32_t, 32>>, std::array<uint64_t, 2>> g_starts;
         uint64_t g_microVersion = 0;
+        std::map<std::array<uint32_t, 1>, uint64_t> g_unpackForms;
 
         int g_inFlip = 0; // the program's index in its flip (SHINO_TRACE_PROGRAM's <n>)
         uint32_t interpret(uint32_t pc, bool rejoin = false);
@@ -873,7 +874,8 @@ namespace shino
                 static int count = -1;
                 static uint64_t at = ~0ull;
                 static int which = -1;
-                if (const char *tp = std::getenv("SHINO_TRACE_PROGRAM"); tp && which < 0)
+                static const char *tp = std::getenv("SHINO_TRACE_PROGRAM"); // read once: getenv a program was 12%
+                if (tp && which < 0)
                 {
                     at = std::strtoull(tp, nullptr, 10);
                     const char *c = std::strchr(tp, ':');
@@ -957,6 +959,48 @@ namespace shino
             return ((reads * bits + 31u) / 32u) * 4u;
         }
 
+        // UNPACK's common case (no mask, no fill, STMOD 0, 32 / 16 / 8-bit elements), one element shape a function:
+        // VN + 1 elements of 4 >> VL bytes (sign-extended unless USN) a vector, the vector filled out to four (S: x to
+        // all, V2: xyxy, V3: w = z), WL vectors written of every CL. The same values as the general way below.
+        template <uint32_t VN, uint32_t VL, bool USN>
+        void unpackSimple(uint8_t *mem, uint32_t qwMask, uint32_t addr, uint32_t num, uint32_t cl, uint32_t wl, const uint8_t *p)
+        {
+            constexpr uint32_t n = VN + 1, size = 4u >> VL;
+            uint32_t row = addr, k = 0; // the destination: addr + (i / wl) * cl + i % wl, kept as it steps
+            for (uint32_t i = 0; i < num; ++i)
+            {
+                uint32_t in[4];
+                if constexpr (VL == 0)
+                {
+                    std::memcpy(in, p, 4 * n);
+                    p += 4 * n;
+                }
+                else
+                    for (uint32_t e = 0; e < n; ++e, p += size)
+                    {
+                        uint32_t x = size == 2 ? uint32_t(p[0] | (p[1] << 8)) : uint32_t(p[0]);
+                        if constexpr (!USN)
+                            x = size == 2 ? uint32_t(int32_t(int16_t(x))) : uint32_t(int32_t(int8_t(x)));
+                        in[e] = x;
+                    }
+                if constexpr (VN == 0)
+                    in[1] = in[2] = in[3] = in[0];
+                else if constexpr (VN == 1)
+                {
+                    in[2] = in[0];
+                    in[3] = in[1];
+                }
+                else if constexpr (VN == 2)
+                    in[3] = in[2];
+                std::memcpy(mem + 16 * ((row + k) & qwMask), in, 16);
+                if (++k == wl)
+                {
+                    k = 0;
+                    row += cl;
+                }
+            }
+        }
+
         void doUnpack(uint32_t code, const uint8_t *data)
         {
             Vif &f = *g_cv;
@@ -967,34 +1011,19 @@ namespace shino
             uint32_t addr = code & 0x3FFu;
             if (flg) addr += f.tops;
             const uint32_t cl = std::max(f.cl, 1u), wl = std::max(f.wl, 1u);
+            if (survey()) // the UNPACK forms: vn vl masked mode fill (what it costs: vectors)
+                g_unpackForms[{vn | vl << 2 | masked << 4 | f.mode << 5 | uint32_t(wl > cl) << 7 | uint32_t(cl != wl) << 8 | uint32_t(usn) << 9}] += num;
             // The common case: no mask, no fill, STMOD 0, 32 / 16 / 8-bit elements: the vectors straight from the data
             // (the same values as the general way below).
             if (!masked && f.mode == 0 && wl <= cl && vl != 3)
             {
-                const uint32_t n = vn + 1, size = 4u >> vl;
-                const uint8_t *p = data;
-                for (uint32_t i = 0; i < num; ++i)
-                {
-                    const uint32_t dest = addr + (i / wl) * cl + i % wl;
-                    uint32_t in[4];
-                    if (vl == 0)
-                    {
-                        std::memcpy(in, p, 4 * n);
-                        p += 4 * n;
-                    }
-                    else
-                        for (uint32_t e = 0; e < n; ++e, p += size)
-                        {
-                            uint32_t x = size == 2 ? uint32_t(p[0] | (p[1] << 8)) : uint32_t(p[0]);
-                            if (!usn)
-                                x = size == 2 ? uint32_t(int32_t(int16_t(x))) : uint32_t(int32_t(int8_t(x)));
-                            in[e] = x;
-                        }
-                    if (vn == 0) in[1] = in[2] = in[3] = in[0];
-                    else if (vn == 1) { in[2] = in[0]; in[3] = in[1]; }
-                    else if (vn == 2) in[3] = in[2];
-                    std::memcpy(&memWord(dest, 0), in, 16);
-                }
+                using Simple = void (*)(uint8_t *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const uint8_t *);
+                static constexpr Simple kSimple[4][3][2] = {
+                    {{unpackSimple<0, 0, false>, unpackSimple<0, 0, true>}, {unpackSimple<0, 1, false>, unpackSimple<0, 1, true>}, {unpackSimple<0, 2, false>, unpackSimple<0, 2, true>}},
+                    {{unpackSimple<1, 0, false>, unpackSimple<1, 0, true>}, {unpackSimple<1, 1, false>, unpackSimple<1, 1, true>}, {unpackSimple<1, 2, false>, unpackSimple<1, 2, true>}},
+                    {{unpackSimple<2, 0, false>, unpackSimple<2, 0, true>}, {unpackSimple<2, 1, false>, unpackSimple<2, 1, true>}, {unpackSimple<2, 2, false>, unpackSimple<2, 2, true>}},
+                    {{unpackSimple<3, 0, false>, unpackSimple<3, 0, true>}, {unpackSimple<3, 1, false>, unpackSimple<3, 1, true>}, {unpackSimple<3, 2, false>, unpackSimple<3, 2, true>}}};
+                kSimple[vn][vl][usn](g_cur->data, g_cur->qwMask, addr, num, cl, wl, data);
                 return;
             }
             uint32_t bitPos = 0;
@@ -1320,6 +1349,10 @@ namespace shino
             std::printf("[shino:vu1]   handed at %04x: %llu\n", pc, (unsigned long long)n);
         for (const auto &[pc, n] : g_compiled.noImageAt)
             std::printf("[shino:vu1]   no image at %04x: %llu\n", pc, (unsigned long long)n);
+        for (const auto &[k, n] : g_unpackForms)
+            std::printf("[shino:survey] unpack vn %u vl %u masked %u mode %u fill %u cl!=wl %u usn %u: %llu vectors\n", k[0] & 3,
+                        (k[0] >> 2) & 3, (k[0] >> 4) & 1, (k[0] >> 5) & 3, (k[0] >> 7) & 1, (k[0] >> 8) & 1, (k[0] >> 9) & 1,
+                        (unsigned long long)n);
         for (const auto &[k, e] : g_mpgs)
             std::printf("[shino:survey] mpg at %03x pairs %3u from %08x: %llu times, %llu changed\n", k[0], k[1], k[2],
                         (unsigned long long)e[0], (unsigned long long)e[1]);
