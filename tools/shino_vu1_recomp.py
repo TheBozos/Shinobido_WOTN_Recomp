@@ -199,7 +199,7 @@ class Pair:
             sp = ((lo >> 6) & 0x1F) << 2 | (lo & 3)
             return {0x30: 'MOVE', 0x31: 'MR32', 0x34: 'LQI', 0x35: 'SQI', 0x36: 'LQD', 0x37: 'SQD', 0x38: 'DIV',
                     0x39: 'SQRT', 0x3A: 'RSQRT', 0x3B: 'WAITQ', 0x3C: 'MTIR', 0x3D: 'MFIR', 0x3E: 'ILWR', 0x3F: 'ISWR',
-                    0x68: 'NONE', 0x69: 'NONE'}.get(sp, 'SLOW')
+                    0x68: 'NONE', 0x69: 'NONE', 0x6C: 'XGKICK'}.get(sp, 'SLOW')
         op = lo >> 25
         if op in (0x00, 0x01, 0x04, 0x05):
             self.imm = imm11
@@ -367,100 +367,141 @@ class Image:
 
 # ---- C++ ------------------------------------------------------------------------------------------------------------------
 
+def F(r):
+    """vf r as the compiled code holds it: a local (vf0 the constant)."""
+    return 'vf0()' if r == 0 else f'f{r}'
+
+
+def I(r):
+    """vi r: a local (vi0 always 0: it is never written)."""
+    return '0u' if r & 15 == 0 else f'i{r & 15}'
+
+
+def set_vf(r, dest, value):
+    """vf r's dest lanes from value (vf0: dropped)."""
+    return '' if r == 0 else f'f{r} = blend({dest}, {value}, f{r});'
+
+
+def set_vi(r, value):
+    """vi r = value, 16 bits (vi0: dropped)."""
+    return '' if r & 15 == 0 else f'i{r & 15} = ({value}) & 0xFFFFu;'
+
+
 def emit_pair(img, node, out):
-    """One pair's code (in braces); a branch's lower instruction sets `take` / `to` of the enclosing block."""
+    """One pair's code (in braces); a branch's lower instruction sets `take` / `to` of the enclosing block. The VU
+    registers are the function's locals (f1-f31, fa ACC, i1-i15); what goes to the interpreter's functions is stored
+    to the unit first and loaded back after (SHINO_STORE / SHINO_LOAD)."""
     p = node[1]
     x = img.pairs[p]
     w = out.append
     w('    {')
     w('        ++n;')
     if img.q[node] > 0:
-        w('        qTick(v);')
+        w('        if (qd && --qd == 0) qv = qp;')
     if x.kind == 'arith':
-        w(f'        const __m128 u = arith(v, {x.fn}, {x.operand}, {x.fs}, {x.ft}, {x.bc});')
+        b = {0: F(x.ft), 1: f'bcast({F(x.ft)}, {x.bc})', 2: '_mm_set1_ps(qv)', 3: '_mm_set1_ps(iv)'}[x.operand]
+        w(f'        const __m128 u = arithV({x.fn}, {F(x.fs)}, {b}, fa);')
     elif x.kind in ('itof', 'ftoi'):
-        w(f'        const Vec u = {x.kind}(v, {x.fs}, {x.fn});')
+        w(f'        const __m128 u = fromVec({x.kind}V(toVec({F(x.fs)}), {x.fn}));')
     elif x.kind == 'abs':
-        w(f'        const Vec u = absv(v, {x.fs});')
+        w(f'        const __m128 u = fromVec(absV(toVec({F(x.fs)})));')
     elif x.kind == 'clip':
-        w(f'        const uint32_t u = clipFlags(v, {x.fs}, {x.ft});')
+        w(f'        const uint32_t u = clipV(v.clip, toVec({F(x.fs)}), toVec({F(x.ft)}));')
     elif x.kind == 'opmula':
-        w(f'        const __m128 u = opmula(v, {x.fs}, {x.ft});')
+        w(f'        const __m128 u = opmulaV({F(x.fs)}, {F(x.ft)}, fa);')
     elif x.kind == 'opmsub':
-        w(f'        const __m128 u = opmsub(v, {x.fs}, {x.ft}, {x.fd});')
+        w(f'        const __m128 u = opmsubV({F(x.fs)}, {F(x.ft)}, fa, {F(x.fd)});')
     elif x.kind == 'scalar':
+        w('        SHINO_STORE;')
         w('        UpperResult u;')
         w(f'        upperSlow(0x{x.up:08x}u, u);')
     if x.xtop and x.xreg:
-        w(f'        v.vi[{x.xreg}] = static_cast<uint16_t>({"top" if x.xtop == 1 else "itop"}());')
+        w(f'        i{x.xreg} = {"top" if x.xtop == 1 else "itop"}() & 0xFFFFu;')
     lk, s_, t_, d_ = x.lk, x.is_, x.it, x.id
-    vi = lambda r: '0u' if r & 15 == 0 else f'vi(v, {r})'  # vi0 is never written: always 0
+    imm = f'{x.imm & 0xFFFFFFFF}u'
+    first = next((f for f in range(4) if (x.ldest >> (3 - f)) & 1), None)  # ILW's field
     L = {
-        'NONE': None,
-        'IADD': f'setVi(v, {d_}, {vi(s_)} + {vi(t_)});',
-        'ISUB': f'setVi(v, {d_}, {vi(s_)} - {vi(t_)});',
-        'IADDI': f'setVi(v, {t_}, {vi(s_)} + {x.imm & 0xFFFFFFFF}u);',
-        'IAND': f'setVi(v, {d_}, {vi(s_)} & {vi(t_)});',
-        'IOR': f'setVi(v, {d_}, {vi(s_)} | {vi(t_)});',
-        'IADDIU': f'setVi(v, {t_}, {vi(s_)} + {x.imm}u);',
-        'ISUBIU': f'setVi(v, {t_}, {vi(s_)} - {x.imm}u);',
-        'MOVE': f'setVf(v, {t_}, {x.ldest}, vf(v, {s_}));',
-        'MR32': f'setVf(v, {t_}, {x.ldest}, mr32(v, {s_}));',
-        'LQI': f'setVf(v, {t_}, {x.ldest}, load1(v, {vi(s_)})); setVi(v, {s_}, {vi(s_)} + 1);',
-        'SQI': f'store1(v, {vi(t_)}, {s_}, {x.ldest}); setVi(v, {t_}, {vi(t_)} + 1);',
-        'LQD': f'setVi(v, {s_}, {vi(s_)} - 1); setVf(v, {t_}, {x.ldest}, load1(v, {vi(s_)}));',
-        'SQD': f'setVi(v, {t_}, {vi(t_)} - 1); store1(v, {vi(t_)}, {s_}, {x.ldest});',
-        'LQ': f'setVf(v, {t_}, {x.ldest}, load1(v, {vi(s_)} + {x.imm & 0xFFFFFFFF}u));',
-        'SQ': f'store1(v, {vi(t_)} + {x.imm & 0xFFFFFFFF}u, {s_}, {x.ldest});',
-        'ILW': f'ilw1(v, {t_}, {vi(s_)} + {x.imm & 0xFFFFFFFF}u, {x.ldest});',
-        'ILWR': f'ilw1(v, {t_}, {vi(s_)}, {x.ldest});',
-        'ISW': f'isw1(v, {t_}, {vi(s_)} + {x.imm & 0xFFFFFFFF}u, {x.ldest});',
-        'ISWR': f'isw1(v, {t_}, {vi(s_)}, {x.ldest});',
-        'MTIR': f'mtir(v, {t_}, {s_}, {x.fsf});',
-        'MFIR': f'mfir(v, {t_}, {s_}, {x.ldest});',
-        'DIV': f'divide(v, 0, {s_}, {x.fsf}, {t_}, {x.ftf});',
-        'SQRT': f'divide(v, 1, {s_}, {x.fsf}, {t_}, {x.ftf});',
-        'RSQRT': f'divide(v, 2, {s_}, {x.fsf}, {t_}, {x.ftf});',
-        'WAITQ': 'waitQ(v);',
-        'FMEQ': f'setVi(v, {t_}, {vi(s_)} == v.macHistory[v.macAt & 3u]);',
-        'FMAND': f'setVi(v, {t_}, {vi(s_)} & v.macHistory[v.macAt & 3u]);',
-        'FMOR': f'setVi(v, {t_}, {vi(s_)} | v.macHistory[v.macAt & 3u]);',
-        'FCEQ': f'v.vi[1] = (v.clip & 0xFFFFFFu) == {x.imm}u;',
+        'NONE': '',
+        'IADD': set_vi(d_, f'{I(s_)} + {I(t_)}'),
+        'ISUB': set_vi(d_, f'{I(s_)} - {I(t_)}'),
+        'IADDI': set_vi(t_, f'{I(s_)} + {imm}'),
+        'IAND': set_vi(d_, f'{I(s_)} & {I(t_)}'),
+        'IOR': set_vi(d_, f'{I(s_)} | {I(t_)}'),
+        'IADDIU': set_vi(t_, f'{I(s_)} + {x.imm}u'),
+        'ISUBIU': set_vi(t_, f'{I(s_)} - {x.imm}u'),
+        'MOVE': set_vf(t_, x.ldest, F(s_)),
+        'MR32': set_vf(t_, x.ldest, f'mr32V({F(s_)})'),
+        'LQI': f'{set_vf(t_, x.ldest, f"load1(v, {I(s_)})")} {set_vi(s_, f"{I(s_)} + 1")}',
+        'SQI': f'store1V(v, {I(t_)}, {F(s_)}, {x.ldest}); {set_vi(t_, f"{I(t_)} + 1")}',
+        'LQD': f'{set_vi(s_, f"{I(s_)} - 1")} {set_vf(t_, x.ldest, f"load1(v, {I(s_)})")}',
+        'SQD': f'{set_vi(t_, f"{I(t_)} - 1")} store1V(v, {I(t_)}, {F(s_)}, {x.ldest});',
+        'LQ': set_vf(t_, x.ldest, f'load1(v, {I(s_)} + {imm})'),
+        'SQ': f'store1V(v, {I(t_)} + {imm}, {F(s_)}, {x.ldest});',
+        'ILW': set_vi(t_, f'word1(v, {I(s_)} + {imm}, {first})') if first is not None else '',
+        'ILWR': set_vi(t_, f'word1(v, {I(s_)}, {first})') if first is not None else '',
+        'ISW': ' '.join(f'setWord1(v, {I(s_)} + {imm}, {f}, {I(t_)});' for f in range(4) if (x.ldest >> (3 - f)) & 1),
+        'ISWR': ' '.join(f'setWord1(v, {I(s_)}, {f}, {I(t_)});' for f in range(4) if (x.ldest >> (3 - f)) & 1),
+        'MTIR': set_vi(t_, f'asU(lane({F(s_)}, {x.fsf}))'),
+        'MFIR': set_vf(t_, x.ldest, f'mfirV({I(s_)})'),
+        'DIV': f'qp = divideResult(0, lane({F(s_)}, {x.fsf}), lane({F(t_)}, {x.ftf})); qd = 7;',
+        'SQRT': f'qp = divideResult(1, lane({F(s_)}, {x.fsf}), lane({F(t_)}, {x.ftf})); qd = 7;',
+        'RSQRT': f'qp = divideResult(2, lane({F(s_)}, {x.fsf}), lane({F(t_)}, {x.ftf})); qd = 13;',
+        'WAITQ': 'if (qd) { qv = qp; qd = 0; }',
+        'FMEQ': set_vi(t_, f'{I(s_)} == v.macHistory[v.macAt & 3u]'),
+        'FMAND': set_vi(t_, f'{I(s_)} & v.macHistory[v.macAt & 3u]'),
+        'FMOR': set_vi(t_, f'{I(s_)} | v.macHistory[v.macAt & 3u]'),
+        'FCEQ': f'i1 = (v.clip & 0xFFFFFFu) == {x.imm}u;',
         'FCSET': f'v.clip = {x.imm}u;',
-        'FCAND': f'v.vi[1] = (v.clip & {x.imm}u) != 0;',
-        'FCOR': f'v.vi[1] = ((v.clip | {x.imm}u) & 0xFFFFFFu) == 0xFFFFFFu;',
-        'FCGET': f'setVi(v, {t_}, v.clip & 0xFFFu);',
-        'SLOW': f'lowerSlow(0x{x.lo:08x}u, 0x{x.pc:04x}u);',
+        'FCAND': f'i1 = (v.clip & {x.imm}u) != 0;',
+        'FCOR': f'i1 = ((v.clip | {x.imm}u) & 0xFFFFFFu) == 0xFFFFFFu;',
+        'FCGET': set_vi(t_, 'v.clip & 0xFFFu'),
+        'XGKICK': f'kick({I(s_)}, 0x{x.pc:04x}u);',
+        'SLOW': f'SHINO_STORE; lowerSlow(0x{x.lo:08x}u, 0x{x.pc:04x}u); SHINO_LOAD;',
         'B': 'take = true;',
-        'BAL': f'setVi(v, {t_}, {(x.pc + 16) // 8}u); take = true;',
-        'JR': f'to = {vi(s_)} * 8u;',
-        'JALR': f'to = {vi(s_)} * 8u; setVi(v, {t_}, {(x.pc + 16) // 8}u);',
-        'IBEQ': f'take = {vi(s_)} == {vi(t_)};',
-        'IBNE': f'take = {vi(s_)} != {vi(t_)};',
-        'IBLTZ': f'take = s16({vi(s_)}) < 0;',
-        'IBGTZ': f'take = s16({vi(s_)}) > 0;',
-        'IBLEZ': f'take = s16({vi(s_)}) <= 0;',
-        'IBGEZ': f'take = s16({vi(s_)}) >= 0;',
+        'BAL': f'{set_vi(t_, f"{(x.pc + 16) // 8}u")} take = true;',
+        'JR': f'to = {I(s_)} * 8u;',
+        'JALR': f'to = {I(s_)} * 8u; {set_vi(t_, f"{(x.pc + 16) // 8}u")}',
+        'IBEQ': f'take = {I(s_)} == {I(t_)};',
+        'IBNE': f'take = {I(s_)} != {I(t_)};',
+        'IBLTZ': f'take = s16({I(s_)}) < 0;',
+        'IBGTZ': f'take = s16({I(s_)}) > 0;',
+        'IBLEZ': f'take = s16({I(s_)}) <= 0;',
+        'IBGEZ': f'take = s16({I(s_)}) >= 0;',
     }[lk]
-    if L:
-        w('        ' + L)
+    if L.strip():
+        w('        ' + L.strip())
+    flags = 'true' if img.flags(node) else 'false'
     if x.kind == 'arith':
-        flags = 'true' if img.flags(node) else 'false'
-        w(f'        commitArith(v, {"true" if x.to_acc else "false"}, {x.fd}, {x.dest}, {flags}, u);')
+        if x.to_acc:
+            w(f'        fa = blend({x.dest}, u, fa);')
+            if flags == 'true':
+                w(f'        setFlags(v, {x.dest}, u);')
+        elif x.fd != 0: # vf0: no write, no flags
+            w(f'        f{x.fd} = blend({x.dest}, u, f{x.fd});')
+            if flags == 'true':
+                w(f'        setFlags(v, {x.dest}, u);')
     elif x.kind in ('itof', 'ftoi', 'abs'):
-        w(f'        setVf(v, {x.ft}, {x.dest}, _mm_loadu_ps(u.f));')
+        if set_vf(x.ft, x.dest, 'u'):
+            w('        ' + set_vf(x.ft, x.dest, 'u'))
     elif x.kind == 'clip':
         w('        v.clip = u;')
     elif x.kind == 'opmula': # ACC's xyz (upper() writes OPMULA's result with dest xyz)
-        w(f'        commitArith(v, true, 0, 14, {"true" if img.flags(node) else "false"}, u);')
+        w('        fa = blend(14, u, fa);')
+        if flags == 'true':
+            w('        setFlags(v, 14, u);')
     elif x.kind == 'opmsub':
-        w(f'        commitArith(v, false, {x.fd}, {x.dest}, {"true" if img.flags(node) else "false"}, u);')
+        if x.fd != 0:
+            w(f'        f{x.fd} = blend({x.dest}, u, f{x.fd});')
+            if flags == 'true':
+                w(f'        setFlags(v, {x.dest}, u);')
     elif x.kind == 'scalar':
+        w('        SHINO_STORE;')
         w('        commitSlow(u);')
+        w('        SHINO_LOAD;')
     if img.push[node]:
         w('        macPush(v);')
     if x.loi:
-        w(f'        v.i = asF(0x{x.lo:08x}u);')
+        w(f'        iv = asF(0x{x.lo:08x}u);')
     w('    }')
 
 
@@ -476,7 +517,12 @@ def emit_image(img):
     w(f'// From the packet at 0x{img.address:x}: pairs 0x{img.first:03x} to 0x{img.last:03x}.')
     w(f'uint32_t {name}(Unit &v, uint32_t pc)')
     w('{')
-    w('    uint32_t guard = 0, n = 0; // n: the pairs run (v.pairs, on the way out)')
+    w('    uint32_t guard = 0, n = 0, ret = 0; // n: the pairs run (v.pairs, on the way out)')
+    w('    __m128 ' + ', '.join(f'f{r}' for r in range(1, 32)) + ', fa;')
+    w('    uint32_t ' + ', '.join(f'i{r}' for r in range(1, 16)) + ';')
+    w('    int qd; // Q: its countdown, its value, the value pending; I')
+    w('    float qv, qp, iv;')
+    w('    SHINO_LOAD;')
     w('dispatch:')
     w('    switch (pc)')
     w('    {')
@@ -487,7 +533,7 @@ def emit_image(img):
         if img.q[node] >= 13:
             w(f'    case 0x{p * 8:04x}u: goto L{p:03x};')
         else:
-            w(f'    case 0x{p * 8:04x}u: if (v.qDelay > {img.q[node]}) return pc | kInterpret; goto L{p:03x};')
+            w(f'    case 0x{p * 8:04x}u: if (qd > {img.q[node]}) return pc | kInterpret; goto L{p:03x};')
     w('    default: return pc | kInterpret;')
     w('    }')
     for p in range(img.first, img.last + 1):
@@ -545,9 +591,13 @@ def emit_image(img):
                 else:
                     w(f'    goto L{n:03x};')
         w('    }')
+    w('out:')
+    w('    SHINO_STORE;')
+    w('    v.pairs += n;')
+    w('    return ret;')
     w('}')
-    # every way out adds the pairs run to v.pairs (RET)
-    return [re.sub(r'\breturn ([^;]+);', r'RET(\1);', line) for line in out]
+    # every way out goes through `out`: the registers stored back to the unit, the pairs run counted (RET)
+    return [line if line.strip() == 'return ret;' else re.sub(r'\breturn ([^;]+);', r'RET(\1);', line) for line in out]
 
 
 def main():
@@ -570,7 +620,12 @@ def main():
         buckets[k].append(img)
         sizes[k] += len(img.code)
     head = ['// Generated by tools/shino_vu1_recomp.py from the player\'s SCES_539.31: do not edit, do not commit.',
-            '#include "shino_vu.h"', '', '#define RET(x) do { v.pairs += n; return (x); } while (0)', '',
+            '#include "shino_vu.h"', '',
+            '// The VU registers in the function\'s locals: loaded from the unit on the way in, stored back on the way out',
+            '// and around the interpreter\'s functions.',
+            '#define SHINO_LOAD do { f1 = _mm_loadu_ps(v.vf[1].f); f2 = _mm_loadu_ps(v.vf[2].f); f3 = _mm_loadu_ps(v.vf[3].f); f4 = _mm_loadu_ps(v.vf[4].f); f5 = _mm_loadu_ps(v.vf[5].f); f6 = _mm_loadu_ps(v.vf[6].f); f7 = _mm_loadu_ps(v.vf[7].f); f8 = _mm_loadu_ps(v.vf[8].f); f9 = _mm_loadu_ps(v.vf[9].f); f10 = _mm_loadu_ps(v.vf[10].f); f11 = _mm_loadu_ps(v.vf[11].f); f12 = _mm_loadu_ps(v.vf[12].f); f13 = _mm_loadu_ps(v.vf[13].f); f14 = _mm_loadu_ps(v.vf[14].f); f15 = _mm_loadu_ps(v.vf[15].f); f16 = _mm_loadu_ps(v.vf[16].f); f17 = _mm_loadu_ps(v.vf[17].f); f18 = _mm_loadu_ps(v.vf[18].f); f19 = _mm_loadu_ps(v.vf[19].f); f20 = _mm_loadu_ps(v.vf[20].f); f21 = _mm_loadu_ps(v.vf[21].f); f22 = _mm_loadu_ps(v.vf[22].f); f23 = _mm_loadu_ps(v.vf[23].f); f24 = _mm_loadu_ps(v.vf[24].f); f25 = _mm_loadu_ps(v.vf[25].f); f26 = _mm_loadu_ps(v.vf[26].f); f27 = _mm_loadu_ps(v.vf[27].f); f28 = _mm_loadu_ps(v.vf[28].f); f29 = _mm_loadu_ps(v.vf[29].f); f30 = _mm_loadu_ps(v.vf[30].f); f31 = _mm_loadu_ps(v.vf[31].f); fa = _mm_loadu_ps(v.acc.f); i1 = v.vi[1]; i2 = v.vi[2]; i3 = v.vi[3]; i4 = v.vi[4]; i5 = v.vi[5]; i6 = v.vi[6]; i7 = v.vi[7]; i8 = v.vi[8]; i9 = v.vi[9]; i10 = v.vi[10]; i11 = v.vi[11]; i12 = v.vi[12]; i13 = v.vi[13]; i14 = v.vi[14]; i15 = v.vi[15]; qd = v.qDelay; qv = v.q; qp = v.pendingQ; iv = v.i; } while (0)',
+            '#define SHINO_STORE do { _mm_storeu_ps(v.vf[1].f, f1); _mm_storeu_ps(v.vf[2].f, f2); _mm_storeu_ps(v.vf[3].f, f3); _mm_storeu_ps(v.vf[4].f, f4); _mm_storeu_ps(v.vf[5].f, f5); _mm_storeu_ps(v.vf[6].f, f6); _mm_storeu_ps(v.vf[7].f, f7); _mm_storeu_ps(v.vf[8].f, f8); _mm_storeu_ps(v.vf[9].f, f9); _mm_storeu_ps(v.vf[10].f, f10); _mm_storeu_ps(v.vf[11].f, f11); _mm_storeu_ps(v.vf[12].f, f12); _mm_storeu_ps(v.vf[13].f, f13); _mm_storeu_ps(v.vf[14].f, f14); _mm_storeu_ps(v.vf[15].f, f15); _mm_storeu_ps(v.vf[16].f, f16); _mm_storeu_ps(v.vf[17].f, f17); _mm_storeu_ps(v.vf[18].f, f18); _mm_storeu_ps(v.vf[19].f, f19); _mm_storeu_ps(v.vf[20].f, f20); _mm_storeu_ps(v.vf[21].f, f21); _mm_storeu_ps(v.vf[22].f, f22); _mm_storeu_ps(v.vf[23].f, f23); _mm_storeu_ps(v.vf[24].f, f24); _mm_storeu_ps(v.vf[25].f, f25); _mm_storeu_ps(v.vf[26].f, f26); _mm_storeu_ps(v.vf[27].f, f27); _mm_storeu_ps(v.vf[28].f, f28); _mm_storeu_ps(v.vf[29].f, f29); _mm_storeu_ps(v.vf[30].f, f30); _mm_storeu_ps(v.vf[31].f, f31); _mm_storeu_ps(v.acc.f, fa); v.vi[1] = static_cast<uint16_t>(i1); v.vi[2] = static_cast<uint16_t>(i2); v.vi[3] = static_cast<uint16_t>(i3); v.vi[4] = static_cast<uint16_t>(i4); v.vi[5] = static_cast<uint16_t>(i5); v.vi[6] = static_cast<uint16_t>(i6); v.vi[7] = static_cast<uint16_t>(i7); v.vi[8] = static_cast<uint16_t>(i8); v.vi[9] = static_cast<uint16_t>(i9); v.vi[10] = static_cast<uint16_t>(i10); v.vi[11] = static_cast<uint16_t>(i11); v.vi[12] = static_cast<uint16_t>(i12); v.vi[13] = static_cast<uint16_t>(i13); v.vi[14] = static_cast<uint16_t>(i14); v.vi[15] = static_cast<uint16_t>(i15); v.qDelay = qd; v.q = qv; v.pendingQ = qp; v.i = iv; } while (0)',
+            '#define RET(x) do { ret = (x); goto out; } while (0)', '',
             'namespace shino::vu', '{']
     stats = {'pairs': 0, 'bails': 0}
     for k, bucket in enumerate(buckets):

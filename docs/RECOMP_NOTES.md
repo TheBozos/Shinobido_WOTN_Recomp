@@ -286,6 +286,15 @@ in another set's code (the 3D sets' last pairs stay loaded under the next set), 
 entry (a program's start, JR's targets), with one condition: Q's countdown no longer than the code there counts down;
 otherwise the interpreter runs the pairs until a set can take the program back.
 
+The registers are the compiled function's locals (`f1`-`f31`, `fa` the ACC, `i1`-`i15`, Q's value, its countdown
+and pending value, I): loaded from the unit on the way in, stored back on the way out (one exit) and around the
+interpreter's functions (`SHINO_LOAD` / `SHINO_STORE`). The data memory's stores can no longer alias them, so the
+compiler keeps them in registers or its own stack slots instead of reloading the unit after every store, and a dest
+field's lanes are a constant mask. The operations on values (`arithV`, `blend`, `opmulaV`, `itofV`, `clipV`,
+`divideResult`...) are the ones the interpreter's forms on the unit call. The VU1's part of the castle's load went
+down by about a third (the game thread's CPU time a frame 18.5 to 16 ms, the cutscene 10.3 to 9). The generated code
+takes about 4 minutes to compile now (1.5 before).
+
 Checks: `SHINO_VU_VERIFY=1` runs each program compiled and then interpreted from the same state and compares
 everything (registers, flags, Q's countdown, the history's last 4, data memory, TPC, kicks): the New Game run's 728k
 programs and the play from the frame-5200 save state, none different. The vertex checksums (`SHINO_CHECKSUM=1`) are
@@ -358,8 +367,8 @@ strong yellow light on some walls.
 
 ## Next
 
-- Speed: the castle's load takes about 17 ms of CPU a frame (40 ms at 25 frames a second); the compiled VU1 code is
-  the largest part (the VU registers kept in memory between pairs).
+- Speed: the castle's load takes about 16 ms of CPU a frame (40 ms at 25 frames a second); the compiled VU1 code is
+  still the largest part (about 1.5 ns a pair: the arithmetic and its clamping), then the uploads and the draws.
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).

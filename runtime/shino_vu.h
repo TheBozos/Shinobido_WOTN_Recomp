@@ -85,9 +85,143 @@ namespace shino::vu
     extern const LaneMasks g_lanes;
     SHINO_VU_INLINE __m128 lanes(uint32_t dest) { return g_lanes.m[dest & 15u]; }
 
-    // ---- The upper arithmetic -----------------------------------------------------------------------------------
-    // fn: 0 add 1 sub 2 madd 3 msub 4 mul 5 max 6 min; operand: 0 ft, 1 ft's bc field broadcast, 2 Q, 3 I. MAX / MINI
-    // as std::max / std::min (operands swapped for SSE's), NaN 0, clamped to the largest finite.
+    // ---- The upper instructions, on values ---------------------------------------------------------------------
+    // The operations on register values (the compiled programs keep the registers in locals); the interpreter's forms
+    // on the unit below run the same ones.
+    // dest's lanes as a mask (x in lane 0): a constant where dest is one.
+    SHINO_VU_INLINE __m128 destMask(uint32_t dest)
+    {
+        return _mm_castsi128_ps(_mm_set_epi32(dest & 1u ? -1 : 0, dest & 2u ? -1 : 0, dest & 4u ? -1 : 0, dest & 8u ? -1 : 0));
+    }
+    // dest's lanes of `value`, the others of `old`
+    SHINO_VU_INLINE __m128 blend(uint32_t dest, __m128 value, __m128 old)
+    {
+        const __m128 m = destMask(dest);
+        return _mm_or_ps(_mm_and_ps(m, value), _mm_andnot_ps(m, old));
+    }
+    // A field broadcast (bc: x 0 ... w 3)
+    SHINO_VU_INLINE __m128 bcast(__m128 t, uint32_t bc)
+    {
+        switch (bc & 3u)
+        {
+        case 0: return _mm_shuffle_ps(t, t, 0x00);
+        case 1: return _mm_shuffle_ps(t, t, 0x55);
+        case 2: return _mm_shuffle_ps(t, t, 0xAA);
+        default: return _mm_shuffle_ps(t, t, 0xFF);
+        }
+    }
+    SHINO_VU_INLINE float lane(__m128 x, uint32_t f)
+    {
+        switch (f & 3u)
+        {
+        case 0: return _mm_cvtss_f32(x);
+        case 1: return _mm_cvtss_f32(_mm_shuffle_ps(x, x, 0x55));
+        case 2: return _mm_cvtss_f32(_mm_shuffle_ps(x, x, 0xAA));
+        default: return _mm_cvtss_f32(_mm_shuffle_ps(x, x, 0xFF));
+        }
+    }
+    SHINO_VU_INLINE Vec toVec(__m128 x)
+    {
+        Vec r;
+        _mm_storeu_ps(r.f, x);
+        return r;
+    }
+    SHINO_VU_INLINE __m128 fromVec(const Vec &x) { return _mm_loadu_ps(x.f); }
+    // NaN 0, then the largest finite either way (clampF on four lanes)
+    SHINO_VU_INLINE __m128 clamped(__m128 r)
+    {
+        r = _mm_and_ps(r, _mm_cmpord_ps(r, r));
+        r = _mm_min_ps(r, _mm_set1_ps(kFloatMax));
+        return _mm_max_ps(r, _mm_set1_ps(-kFloatMax));
+    }
+
+    // fn: 0 add 1 sub 2 madd 3 msub 4 mul 5 max 6 min. MAX / MINI as std::max / std::min (operands swapped for SSE's),
+    // NaN 0, clamped to the largest finite.
+    SHINO_VU_INLINE __m128 arithV(int fn, __m128 a, __m128 b, __m128 acc)
+    {
+        __m128 r;
+        switch (fn)
+        {
+        case 0: r = _mm_add_ps(a, b); break;
+        case 1: r = _mm_sub_ps(a, b); break;
+        case 2: r = _mm_add_ps(acc, _mm_mul_ps(a, b)); break;
+        case 3: r = _mm_sub_ps(acc, _mm_mul_ps(a, b)); break;
+        case 4: r = _mm_mul_ps(a, b); break;
+        case 5: r = _mm_max_ps(b, a); break; // std::max(a, b): a < b ? b : a
+        default: r = _mm_min_ps(b, a); break; // std::min(a, b): b < a ? b : a
+        }
+        return clamped(r);
+    }
+    // The MAC flags (and STATUS's two bits from them) of a result written to dest's lanes.
+    SHINO_VU_INLINE void setFlags(Unit &v, uint32_t dest, __m128 r)
+    {
+        const uint32_t on = static_cast<uint32_t>(_mm_movemask_ps(destMask(dest)));
+        const uint32_t zero = static_cast<uint32_t>(_mm_movemask_ps(_mm_cmpeq_ps(r, _mm_setzero_ps()))) & on;
+        const uint32_t sign = static_cast<uint32_t>(_mm_movemask_ps(r)) & on;
+        const uint16_t mac = static_cast<uint16_t>(g_lanes.rev[zero] | (g_lanes.rev[sign] << 4));
+        v.mac = mac;
+        v.status = (v.status & ~3u) | ((mac & 0xF) ? 1u : 0u) | ((mac & 0xF0) ? 2u : 0u);
+    }
+    // OPMULA: ACC.xyz = fs.yzx * ft.zxy (ACC.w kept); OPMSUB: fd.xyz = ACC.xyz - fs.yzx * ft.zxy (fd.w kept). Clamped as
+    // arith (NaN 0, the largest finite), as upper() does them lane by lane.
+    SHINO_VU_INLINE __m128 keepW(__m128 xyz, __m128 old)
+    {
+        const __m128 mask = _mm_castsi128_ps(_mm_set_epi32(-1, 0, 0, 0)); // lane 3 (w)
+        return _mm_or_ps(_mm_andnot_ps(mask, xyz), _mm_and_ps(mask, old));
+    }
+    SHINO_VU_INLINE __m128 opmulaV(__m128 s, __m128 t, __m128 acc)
+    {
+        const __m128 a = _mm_shuffle_ps(s, s, _MM_SHUFFLE(3, 0, 2, 1)), b = _mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 1, 0, 2));
+        return keepW(clamped(_mm_mul_ps(a, b)), acc);
+    }
+    SHINO_VU_INLINE __m128 opmsubV(__m128 s, __m128 t, __m128 acc, __m128 d)
+    {
+        const __m128 a = _mm_shuffle_ps(s, s, _MM_SHUFFLE(3, 0, 2, 1)), b = _mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 1, 0, 2));
+        return keepW(clamped(_mm_sub_ps(acc, _mm_mul_ps(a, b))), d);
+    }
+    // ITOF0/4/12/15 and FTOI0/4/12/15 (n: 0 to 3), ABS: the vector the upper instruction writes to ft; CLIP: the clip
+    // flags it leaves (fs.xyz against ft.w, the previous ones shifted up). Computed before the lower instruction.
+    SHINO_VU_INLINE Vec itofV(const Vec &s, int n)
+    {
+        static constexpr float scale[4] = {1.0f, 1.0f / 16.0f, 1.0f / 4096.0f, 1.0f / 32768.0f};
+        Vec r;
+        for (int f = 0; f < 4; ++f)
+            r.f[f] = float(static_cast<int32_t>(asU(s.f[f]))) * scale[n];
+        return r;
+    }
+    SHINO_VU_INLINE Vec ftoiV(const Vec &s, int n)
+    {
+        static constexpr float scale[4] = {1.0f, 16.0f, 4096.0f, 32768.0f};
+        Vec r;
+        for (int f = 0; f < 4; ++f)
+        {
+            const double d = double(s.f[f]) * scale[n];
+            const int32_t x = d >= 2147483647.0 ? INT32_MAX : d <= -2147483648.0 ? INT32_MIN : static_cast<int32_t>(d);
+            r.f[f] = asF(static_cast<uint32_t>(x));
+        }
+        return r;
+    }
+    SHINO_VU_INLINE Vec absV(const Vec &s)
+    {
+        Vec r;
+        for (int f = 0; f < 4; ++f)
+            r.f[f] = std::fabs(s.f[f]);
+        return r;
+    }
+    SHINO_VU_INLINE uint32_t clipV(uint32_t clip, const Vec &S, const Vec &T)
+    {
+        const float wv = std::fabs(T.f[3]);
+        uint32_t bits = 0;
+        if (S.f[0] > wv) bits |= 1;
+        if (S.f[0] < -wv) bits |= 2;
+        if (S.f[1] > wv) bits |= 4;
+        if (S.f[1] < -wv) bits |= 8;
+        if (S.f[2] > wv) bits |= 16;
+        if (S.f[2] < -wv) bits |= 32;
+        return ((clip << 6) | bits) & 0xFFFFFFu;
+    }
+
+    // ---- The same on the unit (the interpreter; operand: 0 ft, 1 ft's bc field broadcast, 2 Q, 3 I) ------------
     SHINO_VU_INLINE __m128 arith(const Unit &v, int fn, int operand, uint32_t fs, uint32_t ft, uint32_t bc)
     {
         const __m128 a = _mm_loadu_ps(v.vf[fs].f);
@@ -99,22 +233,8 @@ namespace shino::vu
         case 2: b = _mm_set1_ps(v.q); break;
         default: b = _mm_set1_ps(v.i); break;
         }
-        __m128 r;
-        switch (fn)
-        {
-        case 0: r = _mm_add_ps(a, b); break;
-        case 1: r = _mm_sub_ps(a, b); break;
-        case 2: r = _mm_add_ps(_mm_loadu_ps(v.acc.f), _mm_mul_ps(a, b)); break;
-        case 3: r = _mm_sub_ps(_mm_loadu_ps(v.acc.f), _mm_mul_ps(a, b)); break;
-        case 4: r = _mm_mul_ps(a, b); break;
-        case 5: r = _mm_max_ps(b, a); break; // std::max(a, b): a < b ? b : a
-        default: r = _mm_min_ps(b, a); break; // std::min(a, b): b < a ? b : a
-        }
-        r = _mm_and_ps(r, _mm_cmpord_ps(r, r));
-        r = _mm_min_ps(r, _mm_set1_ps(kFloatMax));
-        return _mm_max_ps(r, _mm_set1_ps(-kFloatMax));
+        return arithV(fn, a, b, _mm_loadu_ps(v.acc.f));
     }
-
     // The arithmetic's result written (dest's lanes of fd, or ACC). `flags`: the MAC flags and STATUS's two bits from
     // it (a compiled program leaves them out where nothing reads them before the next result sets them).
     SHINO_VU_INLINE void commitArith(Unit &v, bool toAcc, uint32_t fd, uint32_t dest, bool flags, __m128 r)
@@ -122,88 +242,22 @@ namespace shino::vu
         if (!toAcc && fd == 0)
             return; // vf0: no write, no flags
         float *dst = toAcc ? v.acc.f : v.vf[fd].f;
-        const __m128 mask = lanes(dest);
-        _mm_storeu_ps(dst, _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, _mm_loadu_ps(dst))));
+        _mm_storeu_ps(dst, blend(dest, r, _mm_loadu_ps(dst)));
         if (flags)
-        {
-            const uint32_t on = static_cast<uint32_t>(_mm_movemask_ps(mask));
-            const uint32_t zero = static_cast<uint32_t>(_mm_movemask_ps(_mm_cmpeq_ps(r, _mm_setzero_ps()))) & on;
-            const uint32_t sign = static_cast<uint32_t>(_mm_movemask_ps(r)) & on;
-            const uint16_t mac = static_cast<uint16_t>(g_lanes.rev[zero] | (g_lanes.rev[sign] << 4));
-            v.mac = mac;
-            v.status = (v.status & ~3u) | ((mac & 0xF) ? 1u : 0u) | ((mac & 0xF0) ? 2u : 0u);
-        }
-    }
-
-    // OPMULA: ACC.xyz = fs.yzx * ft.zxy (ACC.w kept); OPMSUB: fd.xyz = ACC.xyz - fs.yzx * ft.zxy (fd.w kept). Clamped as
-    // arith() (NaN 0, the largest finite), as upper() does them lane by lane.
-    SHINO_VU_INLINE __m128 clamped(__m128 r)
-    {
-        r = _mm_and_ps(r, _mm_cmpord_ps(r, r));
-        r = _mm_min_ps(r, _mm_set1_ps(kFloatMax));
-        return _mm_max_ps(r, _mm_set1_ps(-kFloatMax));
-    }
-    SHINO_VU_INLINE __m128 keepW(__m128 xyz, const float *w4)
-    {
-        const __m128 old = _mm_loadu_ps(w4);
-        const __m128 mask = _mm_castsi128_ps(_mm_set_epi32(-1, 0, 0, 0)); // lane 3 (w)
-        return _mm_or_ps(_mm_andnot_ps(mask, xyz), _mm_and_ps(mask, old));
+            setFlags(v, dest, r);
     }
     SHINO_VU_INLINE __m128 opmula(const Unit &v, uint32_t fs, uint32_t ft)
     {
-        const __m128 s = _mm_loadu_ps(v.vf[fs].f), t = _mm_loadu_ps(v.vf[ft].f);
-        const __m128 a = _mm_shuffle_ps(s, s, _MM_SHUFFLE(3, 0, 2, 1)), b = _mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 1, 0, 2));
-        return keepW(clamped(_mm_mul_ps(a, b)), v.acc.f);
+        return opmulaV(_mm_loadu_ps(v.vf[fs].f), _mm_loadu_ps(v.vf[ft].f), _mm_loadu_ps(v.acc.f));
     }
     SHINO_VU_INLINE __m128 opmsub(const Unit &v, uint32_t fs, uint32_t ft, uint32_t fd)
     {
-        const __m128 s = _mm_loadu_ps(v.vf[fs].f), t = _mm_loadu_ps(v.vf[ft].f);
-        const __m128 a = _mm_shuffle_ps(s, s, _MM_SHUFFLE(3, 0, 2, 1)), b = _mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 1, 0, 2));
-        return keepW(clamped(_mm_sub_ps(_mm_loadu_ps(v.acc.f), _mm_mul_ps(a, b))), v.vf[fd].f);
+        return opmsubV(_mm_loadu_ps(v.vf[fs].f), _mm_loadu_ps(v.vf[ft].f), _mm_loadu_ps(v.acc.f), _mm_loadu_ps(v.vf[fd].f));
     }
-
-    // ITOF0/4/12/15 and FTOI0/4/12/15 (n: 0 to 3), ABS: the vector the upper instruction writes to ft; CLIP: the clip
-    // flags it leaves (fs.xyz against ft.w, the previous ones shifted up). Computed before the lower instruction.
-    SHINO_VU_INLINE Vec itof(const Unit &v, uint32_t fs, int n)
-    {
-        static constexpr float scale[4] = {1.0f, 1.0f / 16.0f, 1.0f / 4096.0f, 1.0f / 32768.0f};
-        Vec r;
-        for (int f = 0; f < 4; ++f)
-            r.f[f] = float(static_cast<int32_t>(asU(v.vf[fs].f[f]))) * scale[n];
-        return r;
-    }
-    SHINO_VU_INLINE Vec ftoi(const Unit &v, uint32_t fs, int n)
-    {
-        static constexpr float scale[4] = {1.0f, 16.0f, 4096.0f, 32768.0f};
-        Vec r;
-        for (int f = 0; f < 4; ++f)
-        {
-            const double d = double(v.vf[fs].f[f]) * scale[n];
-            const int32_t x = d >= 2147483647.0 ? INT32_MAX : d <= -2147483648.0 ? INT32_MIN : static_cast<int32_t>(d);
-            r.f[f] = asF(static_cast<uint32_t>(x));
-        }
-        return r;
-    }
-    SHINO_VU_INLINE Vec absv(const Unit &v, uint32_t fs)
-    {
-        Vec r;
-        for (int f = 0; f < 4; ++f)
-            r.f[f] = std::fabs(v.vf[fs].f[f]);
-        return r;
-    }
-    SHINO_VU_INLINE uint32_t clipFlags(const Unit &v, uint32_t fs, uint32_t ft)
-    {
-        const Vec &S = v.vf[fs];
-        const float wv = std::fabs(v.vf[ft].f[3]);
-        uint32_t bits = 0;
-        if (S.f[0] > wv) bits |= 1;
-        if (S.f[0] < -wv) bits |= 2;
-        if (S.f[1] > wv) bits |= 4;
-        if (S.f[1] < -wv) bits |= 8;
-        if (S.f[2] > wv) bits |= 16;
-        if (S.f[2] < -wv) bits |= 32;
-        return ((v.clip << 6) | bits) & 0xFFFFFFu;
-    }
+    SHINO_VU_INLINE Vec itof(const Unit &v, uint32_t fs, int n) { return itofV(v.vf[fs], n); }
+    SHINO_VU_INLINE Vec ftoi(const Unit &v, uint32_t fs, int n) { return ftoiV(v.vf[fs], n); }
+    SHINO_VU_INLINE Vec absv(const Unit &v, uint32_t fs) { return absV(v.vf[fs]); }
+    SHINO_VU_INLINE uint32_t clipFlags(const Unit &v, uint32_t fs, uint32_t ft) { return clipV(v.clip, v.vf[fs], v.vf[ft]); }
 
     // ---- The lower instructions (as the interpreter's lowerFast does them) --------------------------------------
     SHINO_VU_INLINE uint32_t vi(const Unit &v, uint32_t r) { return v.vi[r & 15u]; }
@@ -253,9 +307,15 @@ namespace shino::vu
         setVf(v, it, dest, _mm_set1_ps(asF(static_cast<uint32_t>(static_cast<int32_t>(s16(vi(v, is)))))));
     }
     // DIV (0), SQRT (1), RSQRT (2): Q's result lands 7 pairs later (13 for RSQRT), or at WAITQ.
-    SHINO_VU_INLINE void divide(Unit &v, int kind, uint32_t is, uint32_t fsf, uint32_t it, uint32_t ftf)
+    SHINO_VU_INLINE float divideResult(int kind, float s, float t);
+    SHINO_VU_INLINE void divideV(Unit &v, int kind, float s, float t)
     {
-        const float s = v.vf[is].f[fsf], t = v.vf[it].f[ftf];
+        v.pendingQ = divideResult(kind, s, t);
+        v.qDelay = kind == 2 ? 13 : 7;
+    }
+    // Q's value from DIV / SQRT / RSQRT
+    SHINO_VU_INLINE float divideResult(int kind, float s, float t)
+    {
         float r;
         if (kind == 0)
             r = t != 0.0f ? s / t : (std::signbit(s) != std::signbit(t) ? -kFloatMax : kFloatMax);
@@ -263,8 +323,11 @@ namespace shino::vu
             r = std::sqrt(std::fabs(t));
         else
             r = t != 0.0f ? s / std::sqrt(std::fabs(t)) : kFloatMax;
-        v.pendingQ = clampF(r);
-        v.qDelay = kind == 2 ? 13 : 7;
+        return clampF(r);
+    }
+    SHINO_VU_INLINE void divide(Unit &v, int kind, uint32_t is, uint32_t fsf, uint32_t it, uint32_t ftf)
+    {
+        divideV(v, kind, v.vf[is].f[fsf], v.vf[it].f[ftf]);
     }
     SHINO_VU_INLINE void waitQ(Unit &v)
     {
@@ -310,6 +373,25 @@ namespace shino::vu
             if (has(dest, f))
                 std::memcpy(mem1(v, qw) + f, &x, 4);
     }
+    // The same with the registers' values (the compiled programs' locals)
+    SHINO_VU_INLINE void store1V(Unit &v, uint32_t qw, __m128 value, uint32_t dest)
+    {
+        float *m = mem1(v, qw);
+        _mm_store_ps(m, blend(dest, value, _mm_load_ps(m)));
+    }
+    SHINO_VU_INLINE uint32_t word1(Unit &v, uint32_t qw, int field)
+    {
+        uint32_t x;
+        std::memcpy(&x, mem1(v, qw) + field, 4);
+        return x;
+    }
+    SHINO_VU_INLINE void setWord1(Unit &v, uint32_t qw, int field, uint32_t x) { std::memcpy(mem1(v, qw) + field, &x, 4); }
+    SHINO_VU_INLINE __m128 mr32V(__m128 s) { return _mm_shuffle_ps(s, s, _MM_SHUFFLE(0, 3, 2, 1)); }
+    SHINO_VU_INLINE __m128 mfirV(uint32_t vi) { return _mm_set1_ps(asF(static_cast<uint32_t>(static_cast<int32_t>(s16(vi))))); }
+    // vf0, the constant (0, 0, 0, 1)
+    SHINO_VU_INLINE __m128 vf0() { return _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f); }
+    // XGKICK: the GS packets at `address` of VU1 data memory (runtime/shino_vu1.cpp: the trace, PATH1)
+    void kick(uint32_t address, uint32_t pc);
 
     // ---- What a compiled program hands to the interpreter (runtime/shino_vu1.cpp), on the unit running ----------
     struct UpperResult

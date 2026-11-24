@@ -455,19 +455,11 @@ namespace shino
                 }
                 case 0x64: { Vec r; for (float &f : r.f) f = v.p; setVf(it, r); return -1; } // MFP
                 case 0x68: case 0x69: return -1; // XTOP, XITOP: runProgram reads the double buffer for them
-                case 0x6C: // XGKICK
-                    ++v.kicks;
-                    if (static const char *t = std::getenv("SHINO_TRACE_KICK"); t && gs::flips() == static_cast<uint64_t>(std::atoll(t)))
-                    {
-                        std::printf("[shino:vu1] kick at %03x from program %x (pc %x)\n", vi(is), g_programStart, pc);
-                        for (uint32_t q = 0; q < 20; ++q)
-                        {
-                            const uint32_t *m = &memWord(vi(is) + q, 0);
-                            std::printf("  %03x: %08x %08x %08x %08x\n", (vi(is) + q) & 0x3FFu, m[0], m[1], m[2], m[3]);
-                        }
-                    }
-                    if (!v.vu0 && !g_noKick)
-                        gs::path1(v.mem, vi(is));
+                case 0x6C: // XGKICK (vu::kick: VU1's PATH1, shared with the compiled programs)
+                    if (v.vu0)
+                        ++v.kicks;
+                    else
+                        vu::kick(vi(is), pc);
                     return -1;
                 case 0x70: { const Vec &s = v.vf[is]; v.p = s.f[0] * s.f[0] + s.f[1] * s.f[1] + s.f[2] * s.f[2]; return -1; } // ESADD
                 case 0x71: { const Vec &s = v.vf[is]; const float d = s.f[0] * s.f[0] + s.f[1] * s.f[1] + s.f[2] * s.f[2]; v.p = d ? 1.0f / d : kFloatMax; return -1; }
@@ -1186,6 +1178,23 @@ namespace shino
         {
             bool loi = false;
             lower(lo, pc, loi);
+        }
+        void kick(uint32_t address, uint32_t pc)
+        {
+            Unit &v = g_vu;
+            ++v.kicks;
+            static const char *t = std::getenv("SHINO_TRACE_KICK");
+            if (t && gs::flips() == static_cast<uint64_t>(std::atoll(t)))
+            {
+                std::printf("[shino:vu1] kick at %03x from program %x (pc %x)\n", address & 0x3FFu, g_programStart, pc);
+                for (uint32_t q = 0; q < 20; ++q)
+                {
+                    const uint32_t *m = &vu::memWord(v, address + q, 0);
+                    std::printf("  %03x: %08x %08x %08x %08x\n", (address + q) & 0x3FFu, m[0], m[1], m[2], m[3]);
+                }
+            }
+            if (!g_noKick)
+                gs::path1(v.mem, address);
         }
         uint32_t top() { return g_cv->top; }
         uint32_t itop() { return g_cv->itop; }
