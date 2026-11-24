@@ -25,14 +25,14 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 
 ## Status
 
-**The game reaches 3D gameplay natively (2026-11-23), and plays past the first mission (2026-11-24).** From "New Game" it plays the opening in-engine cutscene at
-Utakata Castle, then hands over control: the ninja runs and climbs through the castle grounds with his HUD (health, the
-detection eyes, the compass), the tutorial messages and the pause menu, and the guards who spot him fight him (2026-11-24:
-nine minutes of scripted play from there, without a fault). With the cheats it completes the first mission, plays the
-story movie that follows and reaches the Hideout: its menus, the mission scroll, a save to the memory card, and the
-second mission's town. Before that, it boots at full speed through "Sony Computer
-Entertainment Europe presents" and the memory card check to the title screen. Everything on screen is drawn from the
-game's own data:
+**The game reaches 3D gameplay natively (2026-11-23), and plays past the first mission (2026-11-24).** From "New Game"
+it plays the opening in-engine cutscene at Utakata Castle, then hands over control: the ninja runs and climbs through
+the castle grounds with his HUD (health, the detection eyes, the compass), the tutorial messages and the pause menu, and
+the guards who spot him fight him (2026-11-24: nine minutes of scripted play from there, without a fault). With the
+cheats it completes the first mission, plays the story movie that follows and reaches the Hideout: its menus, the
+mission scroll, a save to the memory card, and the second mission's town. Before that, it boots at full speed through
+"Sony Computer Entertainment Europe presents" and the memory card check to the title screen. Everything on screen is
+drawn from the game's own data:
 - the game's render scheduler is replaced natively;
 - its VU1 microprograms (its 2D and 3D both run through them) are recompiled to C++ from the player's executable at
   build time, the 3D's VU0 microprograms interpreted;
@@ -66,6 +66,8 @@ In progress:
 | The main menu ("New Game", on fresh memory cards) | The opening in-engine cutscene at Utakata Castle |
 | ![Gameplay at the castle](docs/screenshots/2026-11-23-gameplay-castle.png) | ![Combat](docs/screenshots/2026-11-24-combat.png) |
 | Gameplay: the ninja in the castle grounds, with his HUD | Combat: a guard has spotted him (the detection eyes) |
+| ![The Hideout](docs/screenshots/2026-11-24-hideout.png) | ![The second mission](docs/screenshots/2026-11-24-second-mission.png) |
+| The Hideout after the first mission: the Mission Scroll menu | The second mission begins: a town, the letter's box on his back |
 
 ## Goal
 
