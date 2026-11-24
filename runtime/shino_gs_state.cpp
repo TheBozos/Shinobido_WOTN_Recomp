@@ -637,17 +637,18 @@ namespace shino::gs
         }
 
         // A primitive's vertices in GS screen coordinates (over 16) as native triangles.
-        void emit(const GsVertex *v, uint32_t count, uint32_t type, uint64_t attrs)
+        // What a primitive's vertices are made with (PRIM's attributes and the context): its texture (or the previous
+        // frame's size), U / V's scale. The texture's size is a power of two, so U / 16 / width is U times the exact
+        // 1 / (16 x width): the same bits, no division.
+        struct Maker
         {
-            const Context &c = g_s.ctx[(attrs >> 9) & 1u];
-            const bool textured = (attrs >> 4) & 1u, fst = (attrs >> 8) & 1u, gouraud = (attrs >> 3) & 1u;
-            const bool previousFrame = samplesPreviousFrame(c, attrs);
-            static const std::shared_ptr<Texture> none;
-            const std::shared_ptr<Texture> &tex = textured && !previousFrame ? texture(c.tex0) : none; // no copy a primitive
-            // The texture's size: decoded, or TEX0's for the previous frame (u, v across the frame, 0 to 1)
-            const float tw = tex ? float(tex->width) : previousFrame ? float(1u << ((c.tex0 >> 26) & 0xFu)) : 1.0f;
-            const float th = tex ? float(tex->height) : previousFrame ? float(1u << ((c.tex0 >> 30) & 0xFu)) : 1.0f;
-            auto make = [&](const GsVertex &g, uint32_t colour) {
+            const Context *c = nullptr;
+            uint64_t attrs = 0;
+            bool textured = false, fst = false, gouraud = false, previousFrame = false;
+            const std::shared_ptr<Texture> *tex = nullptr;
+            float su = 1.0f, sv = 1.0f;
+            Vertex operator()(const GsVertex &g, uint32_t colour) const
+            {
                 Vertex r;
                 r.x = g.x;
                 r.y = g.y;
@@ -655,8 +656,8 @@ namespace shino::gs
                 r.rgba = colour;
                 if (fst)
                 {
-                    r.u = g.u / 16.0f / tw;
-                    r.v = g.v / 16.0f / th;
+                    r.u = g.u * su;
+                    r.v = g.v * sv;
                 }
                 else
                 {
@@ -668,34 +669,196 @@ namespace shino::gs
                     r.q = q;
                 }
                 return r;
+            }
+        };
+        Maker makerFor(uint64_t attrs)
+        {
+            static const std::shared_ptr<Texture> none;
+            Maker m;
+            m.attrs = attrs;
+            m.c = &g_s.ctx[(attrs >> 9) & 1u];
+            m.textured = (attrs >> 4) & 1u;
+            m.fst = (attrs >> 8) & 1u;
+            m.gouraud = (attrs >> 3) & 1u;
+            m.previousFrame = samplesPreviousFrame(*m.c, attrs);
+            m.tex = m.textured && !m.previousFrame ? &texture(m.c->tex0) : &none; // no copy a primitive
+            const std::shared_ptr<Texture> &tex = *m.tex;
+            if (m.fst)
+            {
+                // The texture's size: decoded, or TEX0's for the previous frame (u, v across the frame, 0 to 1).
+                const float tw = tex ? float(tex->width) : m.previousFrame ? float(1u << ((m.c->tex0 >> 26) & 0xFu)) : 1.0f;
+                const float th = tex ? float(tex->height) : m.previousFrame ? float(1u << ((m.c->tex0 >> 30) & 0xFu)) : 1.0f;
+                m.su = 1.0f / (16.0f * tw);
+                m.sv = 1.0f / (16.0f * th);
+            }
+            return m;
+        }
+
+        // The draw's materials from the registers they are made of: made again only when one of those changed. The
+        // alpha test's failing pixels (TEST.AFAIL): KEEP drops them; FB_ONLY still writes their colour (not Z),
+        // ZB_ONLY their Z (not the colour), RGB_ONLY their RGB: a second pass with the opposite test.
+        struct Made
+        {
+            uint64_t in[8] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
+            Material pass, fail;
+            bool drawPass = true, twoPass = false;
+            uint64_t serial = 0; // even: the pass, odd: the failing pixels
+        } g_made;
+
+        // Where a primitive's triangles go: its frame buffer's last batch (or last two: a two-pass draw), a new one when
+        // the texture or the materials changed. False for ZTST NEVER (not drawn). The vectors stay good while no other
+        // primitive is placed.
+        bool targetFor(const Maker &m, std::vector<Vertex> *&into, std::vector<Vertex> *&alsoInto)
+        {
+            const Context &c = *m.c;
+            into = alsoInto = nullptr;
+            if (((c.test >> 16) & 1u) && ((c.test >> 17) & 3u) == 0u)
+                return false; // ZTST NEVER
+            const uint32_t fbp = c.frame & 0x1FFu;
+            Made &made = g_made;
+            const uint64_t in[8] = {c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf, m.attrs & 0x150u, c.frame};
+            bool changed = false;
+            for (int k = 0; k < 8; ++k)
+                changed |= in[k] != made.in[k];
+            if (changed)
+            {
+                std::memcpy(made.in, in, sizeof(in));
+                made.serial += 2;
+                made.pass = material(c, m.attrs);
+                const uint32_t afail = (c.test >> 12) & 3u;
+                made.twoPass = made.pass.alphaTest && afail != 0u && made.pass.alphaFunc != Material::AlphaFunc::Always;
+                made.drawPass = true;
+                if (made.twoPass)
+                {
+                    using F = Material::AlphaFunc;
+                    static const F opposite[8] = {F::Always, F::Never, F::GreaterEqual, F::Greater, F::NotEqual, F::Less, F::LessEqual, F::Equal};
+                    Material &fail = made.fail;
+                    fail = made.pass;
+                    fail.alphaFunc = opposite[static_cast<uint32_t>(made.pass.alphaFunc)];
+                    if (fail.alphaFunc == F::Always)
+                        fail.alphaTest = false;
+                    if (afail == 1u)
+                        fail.depthWrite = false;
+                    else if (afail == 2u)
+                        fail.colourMask = 0;
+                    else
+                    {
+                        fail.colourMask = 0x7u;
+                        fail.depthWrite = false;
+                    }
+                    made.drawPass = made.pass.alphaFunc != F::Never;
+                }
+            }
+            // (the frame buffer's list kept from the last primitive: the lists stay in the map from frame to frame)
+            static uint32_t listFbp = ~0u;
+            static std::vector<Batch> *listOf = nullptr;
+            if (fbp != listFbp)
+            {
+                listOf = &g_frameDraws[fbp];
+                listFbp = fbp;
+            }
+            auto &list = *listOf;
+            const std::shared_ptr<Texture> &tex = *m.tex;
+            auto same = [&](const Batch &b, uint64_t serial) { return b.made == serial && b.texture == tex; };
+            // A new batch, empty: its vector one of an earlier frame's (its storage kept: no allocation a batch).
+            auto fresh = [&](const Material &material, uint64_t serial) {
+                Batch b;
+                b.material = material;
+                b.texture = tex;
+                b.made = serial;
+                if (!g_spareVertices.empty())
+                {
+                    b.vertices = std::move(g_spareVertices.back());
+                    g_spareVertices.pop_back();
+                }
+                list.push_back(std::move(b));
             };
-            static std::vector<Vertex> out; // the primitive's triangles (reused: no allocation a primitive)
-            out.clear();
+            const size_t n = list.size();
+            if (!made.twoPass || !made.drawPass)
+            {
+                const uint64_t serial = made.serial + (made.twoPass ? 1u : 0u);
+                if (!(n && same(list[n - 1], serial)))
+                    fresh(made.twoPass ? made.fail : made.pass, serial);
+                into = &list.back().vertices;
+            }
+            else
+            {
+                if (!(n >= 2 && same(list[n - 2], made.serial) && same(list[n - 1], made.serial + 1)))
+                {
+                    fresh(made.pass, made.serial);
+                    fresh(made.fail, made.serial + 1);
+                }
+                into = &list[list.size() - 2].vertices;
+                alsoInto = &list.back().vertices;
+            }
+            return true;
+        }
+
+        void checksum(const Vertex *p, size_t n) // SHINO_CHECKSUM: FNV-1a over what is drawn
+        {
+            for (size_t i = 0; i < n; ++i)
+                for (const uint8_t b : std::bit_cast<std::array<uint8_t, sizeof(Vertex)>>(p[i]))
+                    g_checksum = (g_checksum ^ b) * 0x100000001B3ull;
+        }
+
+        void emit(const GsVertex *v, uint32_t count, uint32_t type, uint64_t attrs)
+        {
+            if (type == 0 || type == 7)
+                return; // points, the undefined type: not drawn
+            const Maker make = makerFor(attrs);
+            const Context &c = *make.c;
+            const bool textured = make.textured, fst = make.fst, gouraud = make.gouraud;
+            const std::shared_ptr<Texture> &tex = *make.tex;
+            ++g_prims;
+            std::vector<Vertex> *into = nullptr, *alsoInto = nullptr;
+            targetFor(make, into, alsoInto);
+            static std::vector<Vertex> scratch; // a primitive that is not drawn: made for the traces and the checksum
+            if (!into)
+            {
+                scratch.clear();
+                into = &scratch;
+            }
+            std::vector<Vertex> &to = *into;
+            const size_t first = to.size();
             if (type == 6) // sprite: two corners
             {
                 const uint32_t col = v[1].rgba;
-                Vertex a = make(v[0], col), b = make(v[1], col);
+                const Vertex a = make(v[0], col), b = make(v[1], col);
                 Vertex tr = a, bl = a;
                 tr.x = b.x; tr.u = b.u;
                 bl.y = b.y; bl.v = b.v;
-                out.insert(out.end(), {a, tr, b, a, b, bl});
+                to.push_back(a); to.push_back(tr); to.push_back(b);
+                to.push_back(a); to.push_back(b); to.push_back(bl);
             }
-            else if (type >= 3 && type <= 5)
+            else if (type >= 3) // triangles (list, strip, fan)
             {
                 const uint32_t flat = v[2].rgba;
                 for (uint32_t i = 0; i < 3; ++i)
-                    out.push_back(make(v[i], gouraud ? v[i].rgba : flat));
+                    to.push_back(make(v[i], gouraud ? v[i].rgba : flat));
             }
-            else if (type == 1 || type == 2) // lines as thin quads
+            else // lines as thin quads
             {
-                Vertex a = make(v[0], gouraud ? v[0].rgba : v[1].rgba), b = make(v[1], v[1].rgba);
+                const Vertex a = make(v[0], gouraud ? v[0].rgba : v[1].rgba), b = make(v[1], v[1].rgba);
                 Vertex a2 = a, b2 = b;
                 a2.y += 1; b2.y += 1;
-                out.insert(out.end(), {a, b, b2, a, b2, a2});
+                to.push_back(a); to.push_back(b); to.push_back(b2);
+                to.push_back(a); to.push_back(b2); to.push_back(a2);
             }
-            else
-                return;
-            ++g_prims;
+            // The primitive's triangles as made, for the two-pass draw's second batch and the traces.
+            const Vertex *made = to.data() + first;
+            const size_t madeCount = to.size() - first;
+            if (alsoInto)
+                for (size_t i = 0; i < madeCount; ++i) // pushed one by one: inline, no memmove call a primitive
+                    alsoInto->push_back(made[i]);
+            struct View
+            {
+                const Vertex *p;
+                size_t n;
+                size_t size() const { return n; }
+                const Vertex &operator[](size_t i) const { return p[i]; }
+                const Vertex *begin() const { return p; }
+                const Vertex *end() const { return p + n; }
+            } const out{made, madeCount};
             if (static const char *dump = std::getenv("SHINO_DUMP_PRIMS"); dump && g_flips == static_cast<uint64_t>(std::atoll(dump)))
                 std::printf("[shino:prim] type=%u tex=%d fbp=%x tex0=%llx v0=(%.1f,%.1f) v1=(%.1f,%.1f) rgba=%08x abe=%d\n", type,
                             int(textured), unsigned(c.frame & 0x1FFu), (unsigned long long)c.tex0, v[0].x, v[0].y,
@@ -762,102 +925,6 @@ namespace shino::gs
                 }
                 ++g_survey[key];
             }
-            if (((c.test >> 16) & 1u) && ((c.test >> 17) & 3u) == 0u)
-                return; // ZTST NEVER
-            const uint32_t fbp = c.frame & 0x1FFu;
-            // The draw's materials from the registers they are made of: made again only when one of those changed.
-            // The alpha test's failing pixels (TEST.AFAIL): KEEP drops them; FB_ONLY still writes their colour (not
-            // Z), ZB_ONLY their Z (not the colour), RGB_ONLY their RGB: a second pass with the opposite test.
-            struct Made
-            {
-                uint64_t in[8] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
-                Material pass, fail;
-                bool drawPass = true, twoPass = false;
-                uint64_t serial = 0; // even: the pass, odd: the failing pixels
-            };
-            static Made made;
-            const uint64_t in[8] = {c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf, attrs & 0x150u, c.frame};
-            bool changed = false;
-            for (int k = 0; k < 8; ++k)
-                changed |= in[k] != made.in[k];
-            if (changed)
-            {
-                std::memcpy(made.in, in, sizeof(in));
-                made.serial += 2;
-                made.pass = material(c, attrs);
-                const uint32_t afail = (c.test >> 12) & 3u;
-                made.twoPass = made.pass.alphaTest && afail != 0u && made.pass.alphaFunc != Material::AlphaFunc::Always;
-                made.drawPass = true;
-                if (made.twoPass)
-                {
-                    using F = Material::AlphaFunc;
-                    static const F opposite[8] = {F::Always, F::Never, F::GreaterEqual, F::Greater, F::NotEqual, F::Less, F::LessEqual, F::Equal};
-                    Material &fail = made.fail;
-                    fail = made.pass;
-                    fail.alphaFunc = opposite[static_cast<uint32_t>(made.pass.alphaFunc)];
-                    if (fail.alphaFunc == F::Always)
-                        fail.alphaTest = false;
-                    if (afail == 1u)
-                        fail.depthWrite = false;
-                    else if (afail == 2u)
-                        fail.colourMask = 0;
-                    else
-                    {
-                        fail.colourMask = 0x7u;
-                        fail.depthWrite = false;
-                    }
-                    made.drawPass = made.pass.alphaFunc != F::Never;
-                }
-            }
-            // Into the frame buffer's list: onto its last batch (or last two: a run of two-pass draws keeps its passes
-            // and its failing pixels in one batch each) when the texture and the materials are the same.
-            // (the frame buffer's list kept from the last primitive: the lists stay in the map from frame to frame)
-            static uint32_t listFbp = ~0u;
-            static std::vector<Batch> *listOf = nullptr;
-            if (fbp != listFbp)
-            {
-                listOf = &g_frameDraws[fbp];
-                listFbp = fbp;
-            }
-            auto &list = *listOf;
-            auto same = [&](const Batch &b, uint64_t serial) { return b.made == serial && b.texture == tex; };
-            // A new batch: its vertices in a vector of an earlier frame's (its storage kept: no allocation a batch).
-            auto fresh = [&](const Material &m, uint64_t serial) {
-                Batch b;
-                b.material = m;
-                b.texture = tex;
-                b.made = serial;
-                if (!g_spareVertices.empty())
-                {
-                    b.vertices = std::move(g_spareVertices.back());
-                    g_spareVertices.pop_back();
-                }
-                b.vertices.assign(out.begin(), out.end());
-                list.push_back(std::move(b));
-            };
-            const size_t n = list.size();
-            if (!made.twoPass || !made.drawPass)
-            {
-                const Material &m = made.twoPass ? made.fail : made.pass;
-                const uint64_t serial = made.serial + (made.twoPass ? 1u : 0u);
-                if (n && same(list[n - 1], serial))
-                    for (const Vertex &x : out) // pushed one by one: inline, no memmove call a primitive
-                        list[n - 1].vertices.push_back(x);
-                else
-                    fresh(m, serial);
-                return;
-            }
-            if (n >= 2 && same(list[n - 2], made.serial) && same(list[n - 1], made.serial + 1))
-            {
-                for (const Vertex &x : out)
-                {
-                    list[n - 2].vertices.push_back(x);
-                    list[n - 1].vertices.push_back(x);
-                }
-                return;
-            }
-            fresh(made.pass, made.serial);
-            fresh(made.fail, made.serial + 1);
         }
 
         void vertexKick(uint64_t xyz, uint32_t z, uint32_t fog, bool draw)
@@ -898,6 +965,118 @@ namespace shino::gs
             case 5: g_queue.eraseAt(1); break;                                    // fan: keep the first and the last
             default: g_queue.clear(); break;
             }
+        }
+
+        // The common XGKICK tag, triangles: its registers only ST, RGBAQ, UV, FOG and XYZ (and NOP), so what its
+        // primitives are drawn with (PRIM, the context, the texture, the materials, the batch) is the same for every one
+        // of them: found once, at the first triangle drawn, and each triangle made into the batch as its vertices come.
+        // The same vertices, batches and checksum as register by register (packedOne, vertexKick, emit), which takes
+        // any other tag, and every tag while a primitive trace is on.
+        bool packedFast(const uint8_t *vuMemory, uint32_t at, uint64_t regs, uint32_t nreg, uint32_t loops)
+        {
+            static const bool traced = std::getenv("SHINO_DUMP_PRIMS") || std::getenv("SHINO_PICK") ||
+                                       std::getenv("SHINO_SURVEY") || std::getenv("SHINO_DUMP_KICKS");
+            if (traced || loops == 0)
+                return false;
+            bool xyz = false;
+            for (uint32_t k = 0; k < nreg; ++k)
+            {
+                const uint32_t r = static_cast<uint32_t>(regs >> (4 * k)) & 0xFu;
+                if (r == 0x4 || r == 0x5)
+                    xyz = true;
+                else if (r != 0x1 && r != 0x2 && r != 0x3 && r != 0xA && r != 0xF)
+                    return false;
+            }
+            State &s = g_s;
+            const uint64_t attrs = (s.prmodecont & 1u) ? s.prim : (s.prmode & ~7ull) | (s.prim & 7u);
+            const uint32_t type = attrs & 7u;
+            if (!xyz || type < 3 || type > 5)
+                return false;
+            const Context &c = s.ctx[(attrs >> 9) & 1u];
+            const float ox = float(c.xyoffset & 0xFFFFu), oy = float((c.xyoffset >> 32) & 0xFFFFu);
+            const bool stq = !((attrs >> 8) & 1u), gouraud = (attrs >> 3) & 1u;
+            static const bool sum = std::getenv("SHINO_CHECKSUM") != nullptr;
+            Maker make;
+            bool placed = false, drawn = false;
+            std::vector<Vertex> *into = nullptr, *alsoInto = nullptr;
+            for (uint32_t l = 0; l < loops; ++l)
+                for (uint32_t k = 0; k < nreg; ++k, ++at)
+                {
+                    uint64_t lo, hi;
+                    const uint8_t *q = vuMemory + 16 * (at & 0x3FFu);
+                    std::memcpy(&lo, q, 8);
+                    std::memcpy(&hi, q + 8, 8);
+                    const uint32_t r = static_cast<uint32_t>(regs >> (4 * k)) & 0xFu;
+                    uint32_t z, fog;
+                    switch (r)
+                    {
+                    case 0x1: // RGBAQ (packedOne)
+                        s.rgbaq = (lo & 0xFFu) | ((lo >> 24) & 0xFF00u) | ((hi & 0xFFu) << 16) | ((hi >> 8) & 0xFF000000u) |
+                                  (uint64_t(std::bit_cast<uint32_t>(s.q)) << 32);
+                        continue;
+                    case 0x2: // ST, Q
+                        s.s = std::bit_cast<float>(static_cast<uint32_t>(lo));
+                        s.t = std::bit_cast<float>(static_cast<uint32_t>(lo >> 32));
+                        s.q = std::bit_cast<float>(static_cast<uint32_t>(hi));
+                        continue;
+                    case 0x3: s.u = lo & 0x3FFFu; s.v = (lo >> 32) & 0x3FFFu; continue;
+                    case 0xA: s.fog = (hi >> 36) & 0xFFu; continue;
+                    case 0x4: z = (hi >> 4) & 0xFFFFFFu; fog = (hi >> 36) & 0xFFu; break; // XYZF2
+                    case 0x5: z = static_cast<uint32_t>(hi); fog = s.fog; break;          // XYZ2
+                    default: continue;                                                     // NOP
+                    }
+                    // the vertex (vertexKick): window pixels, the primitive coordinate less the context's XYOFFSET
+                    GsVertex v;
+                    v.x = (float(lo & 0xFFFFu) - ox) / 16.0f;
+                    v.y = (float((lo >> 32) & 0xFFFFu) - oy) / 16.0f;
+                    v.z = z;
+                    v.fog = fog;
+                    v.rgba = static_cast<uint32_t>(s.rgbaq & 0xFFFFFFFFu);
+                    v.q = s.q;
+                    v.u = stq ? s.s : float(s.u);
+                    v.v = stq ? s.t : float(s.v);
+                    g_queue.push_back(v);
+                    if (g_queue.size() < 3)
+                        continue;
+                    if (!((hi >> 47) & 1u)) // ADC clear: drawn
+                    {
+                        if (!placed)
+                        {
+                            make = makerFor(attrs);
+                            drawn = targetFor(make, into, alsoInto);
+                            placed = true;
+                        }
+                        ++g_prims;
+                        const GsVertex *t = g_queue.data() + g_queue.size() - 3;
+                        const uint32_t flat = t[2].rgba;
+                        const Vertex a = make(t[0], gouraud ? t[0].rgba : flat), b = make(t[1], gouraud ? t[1].rgba : flat),
+                                     d = make(t[2], gouraud ? t[2].rgba : flat);
+                        if (drawn)
+                        {
+                            into->push_back(a);
+                            into->push_back(b);
+                            into->push_back(d);
+                            if (alsoInto)
+                            {
+                                alsoInto->push_back(a);
+                                alsoInto->push_back(b);
+                                alsoInto->push_back(d);
+                            }
+                        }
+                        if (sum)
+                        {
+                            const Vertex three[3] = {a, b, d};
+                            checksum(three, 3);
+                        }
+                    }
+                    switch (type)
+                    {
+                    case 4: g_queue.eraseAt(0); break; // strip: keep two
+                    case 5: g_queue.eraseAt(1); break; // fan: keep the first and the last
+                    default: g_queue.clear(); break;
+                    }
+                }
+            return true;
         }
     } // namespace
 
@@ -1002,6 +1181,8 @@ namespace shino::gs
     // registers in turn, all in this file (no call a quadword).
     void packedRun(const uint8_t *vuMemory, uint32_t at, uint64_t regs, uint32_t nreg, uint32_t loops)
     {
+        if (packedFast(vuMemory, at, regs, nreg, loops))
+            return;
         for (uint32_t l = 0; l < loops; ++l)
             for (uint32_t k = 0; k < nreg; ++k, ++at)
             {

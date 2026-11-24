@@ -344,6 +344,20 @@ frame):
 - **The textures used last** stay good after an upload elsewhere: the generation over their own pages compared.
 - The vertex queue's shift spelled out (GCC made the loop a memmove call).
 
+Then the primitives' assembly (30,000 primitives a frame at the castle's load, nearly all triangles from XGKICK's
+PACKED tags):
+- **A tag at once.** A PACKED tag whose registers are only ST, RGBAQ, UV, FOG and XYZ (and NOP) cannot change what its
+  primitives are drawn with: PRIM, the context, the texture, the materials, the batch are found once, at its first
+  triangle drawn (`packedFast`), and each triangle is made into the batch as its vertices come, with no call a
+  register, a vertex or a primitive. Other tags, and every tag while a primitive trace is on, go register by register
+  (`packedOne`, `vertexKick`, `emit`); both share `makerFor` (the texture, U / V's scale) and `targetFor` (the
+  materials and the batch).
+- **U / V by multiplication.** U / 16 / width with the width a power of two is U times the exact 1 / (16 x width): the
+  same bits, without the divisions.
+- `emit`'s triangles are made into the batch (no copy from a scratch vector).
+The vertex checksums are the same through the New Game run and 3,000 frames of play; the castle's load about 10 to 9.5
+ms of CPU a frame (the machine less loaded than for the numbers below).
+
 The game thread's CPU time a frame (headless): at the load 32 ms before (the VU1 recompiled), about 15.5 now; in the
 cutscene 18, about 7.5. The GS translator and VIF take about 5 ms of the load's 17 (the VU1 about 6.5); the renderer's
 own copy of the vertices (BozoEngine's `Renderer::draw`) about 2.5%. Vertex checksums unchanged.
@@ -398,8 +412,9 @@ strong yellow light on some walls.
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
-  the largest part (about 1.5 ns a pair: the arithmetic and its clamping). Then the renderer's own copy of every
-  vertex (BozoEngine's `Renderer::draw`, about 4.5%: an engine change) and the primitives' assembly (`emit`, about 6%).
+  the largest part (about 1.5 ns a pair: the arithmetic and its clamping). Then the primitives' assembly
+  (`packedFast`, about 7%) and the renderer's own copy of every vertex (BozoEngine's `Renderer::draw`, about 3%: an
+  engine change).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).
