@@ -36,16 +36,24 @@ namespace shino::cheats
     void savePosition(int slot);
     bool hasSavedPosition(int slot);
     void loadPosition(int slot);
-    // The mission's goal area, where a carry mission's item is to be taken (runtime/shino_cheats.cpp): the centre of
-    // the markers the mission placed, valid while there are some. teleportToGoal: there (refused when there is none).
-    struct Goal
+    // Places a mission has (runtime/shino_cheats.cpp), found each frame in play; count: how many it found.
+    // - goal: where the mission ends: the centre of the goal markers when they are close together (a carry mission's
+    //   room), else the marker nearest the ninja (a thievery mission's exits, a way out once the item is taken);
+    // - item: the item to take (the carriable item nearest the ninja that he does not carry: the documents to steal);
+    // - enemy: the living enemy nearest the ninja (teleportToEnemy puts him just behind it: a stealth kill's place).
+    struct Place
     {
         bool valid = false;
         float x = 0, y = 0, z = 0;
-        int markers = 0;
+        int count = 0;
     };
-    Goal goal();
+    using Goal = Place;
+    Place goal();
+    Place item();
+    Place enemy();
     void teleportToGoal();
+    void teleportToItem();
+    void teleportToEnemy();
     // What happened last (a teleport made, refused), for the tab.
     std::string status();
 

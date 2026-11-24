@@ -1,8 +1,8 @@
 // Shinobido's cheats (shino_cheats.h). The executable is stripped: the fields are the ones found by watching the game's
 // memory as the ninja walks and is hurt (docs/RECOMP_NOTES.md, "Cheats"):
 //
-// - The player's object: the pointer at gp-0x6a0c (0x625d64; also gp-0x6a08 and gp-0x6308). Its first word points at
-//   itself (the check that it is one).
+// - The player's object: the pointer at gp-0x6a08 (0x625d68; also gp-0x6308, and gp-0x6a0c, which some missions leave
+//   stale). Its first word points at itself (the check that it is one, with his health and position).
 // - His position: his world matrix at +0x10 (rows x, y, z, then the translation): the translation at +0x40. Written
 //   there, the game moves him on from it (a copy at +0x140 and the draw's are the last frame's). The z row (+0x30) is
 //   the way he faces.
@@ -10,7 +10,8 @@
 // - The characters: a table the pointer at gp-0x6d38 (0x625a38) gives, 16-byte entries from +0x20, the object at +4
 //   (the player first, then the guards). Each character's object has the same layout as the player's and a status
 //   block that starts with its own address again (the player's at +0x630, a guard's at +0x620): health at +0x1c out of
-//   +0x20 (24 for the first mission's guards).
+//   +0x20 (24 for the first mission's guards). Some characters have none (the later missions' townspeople and
+//   escorts: another block starts with their address, its +4 pointing back into them).
 // - The guards' senses: each guard's brain (its class's table at 0x61af90, +8 the guard) keeps its stimuli in three
 //   queues of 0x30-byte records (+0x394, +0x3a4, +0x3b4: the source, a state, the position at +0x10, a priority and a
 //   kind at +0x20 / +0x24). Each frame (0x167540) it takes the first into its record at +0x10, then +0x40 (its target:
@@ -34,7 +35,9 @@ namespace shino::cheats
 {
     namespace
     {
-        constexpr uint32_t kPlayerPointer = 0x625d64; // gp-0x6a0c
+        // The pointers to the player's object: gp-0x6a08, gp-0x6308, gp-0x6a0c (the last is left stale by some missions'
+        // loads: the third mission's points at freed memory).
+        constexpr uint32_t kPlayerPointers[] = {0x625d68, 0x626468, 0x625d64};
         constexpr uint32_t kMatrix = 0x10, kFacing = 0x30, kPosition = 0x40, kHealth = 0x64c, kMaxHealth = 0x650;
 
         bool fromEnvironment(const char *name)
@@ -49,7 +52,7 @@ namespace shino::cheats
         constexpr uint32_t kMaxCharacters = 128;
 
         // The teleport asked for (by the tab or SHINO_TELEPORT), made at the next frame the player is in play.
-        enum class Kind { None, To, By, Goal };
+        enum class Kind { None, To, By, Goal, Item, Enemy };
         struct Request
         {
             Kind kind = Kind::None;
@@ -59,9 +62,11 @@ namespace shino::cheats
         Request g_request;
         Player g_player;
         Player g_slots[kSlots];
-        Goal g_goal;
+        Place g_goal, g_item, g_enemy;
+        float g_enemyFacing[2] = {0, 1};
         constexpr uint32_t kMissionPointer = 0x625c5c; // gp-0x6b14
         constexpr uint32_t kCarry = 0x440, kGoalMarkers = 0x88, kMarkerPosition = 0xc0;
+        constexpr uint32_t kItemList = 0x625ac8; // gp-0x6ca8
 
         std::string g_status;
 
@@ -85,53 +90,111 @@ namespace shino::cheats
         }
         void writeF(uint8_t *ram, uint32_t a, float v) { std::memcpy(ram + (a & 0x1FFFFFFu), &v, 4); }
 
-        // The goal markers' centre (the mission's carry part, +0x88), or invalid.
-        Goal findGoal(const uint8_t *ram)
+        bool isPlayer(const uint8_t *ram, uint32_t object)
         {
-            Goal g;
-            const uint32_t mission = read32(ram, kMissionPointer);
-            if (mission < 0x100000u || mission >= 0x2000000u - 0x1000u)
-                return g;
-            float sum[3] = {0, 0, 0};
-            for (uint32_t i = 0; i < 16; ++i)
-            {
-                const uint32_t marker = read32(ram, mission + kCarry + kGoalMarkers + 4 * i);
-                if (marker < 0x100000u || marker >= 0x2000000u - 0x100u)
-                    continue;
-                float v[4];
-                for (uint32_t k = 0; k < 4; ++k)
-                    v[k] = readF(ram, marker + kMarkerPosition + 4 * k);
-                if (v[3] != 1.0f || !std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2]) ||
-                    std::fabs(v[0]) > 1e5f || std::fabs(v[2]) > 1e5f)
-                    continue;
-                for (uint32_t k = 0; k < 3; ++k)
-                    sum[k] += v[k];
-                ++g.markers;
-            }
-            if (g.markers)
-            {
-                g.valid = true;
-                g.x = sum[0] / g.markers;
-                g.y = sum[1] / g.markers;
-                g.z = sum[2] / g.markers;
-            }
-            return g;
-        }
-
-        // The player's object, or 0 while there is none (menus, movies, loads).
-        uint32_t playerObject(const uint8_t *ram)
-        {
-            const uint32_t object = read32(ram, kPlayerPointer);
             if (object < 0x100000u || object >= 0x2000000u - 0x1000u || read32(ram, object) != object)
-                return 0;
+                return false;
             const int32_t health = static_cast<int32_t>(read32(ram, object + kHealth));
             const int32_t max = static_cast<int32_t>(read32(ram, object + kMaxHealth));
             if (max <= 0 || max > 100000 || health < 0 || health > max)
-                return 0;
+                return false;
             for (uint32_t k = 0; k < 3; ++k)
                 if (!std::isfinite(readF(ram, object + kPosition + 4 * k)))
-                    return 0;
-            return object;
+                    return false;
+            return true;
+        }
+        uint32_t playerObject(const uint8_t *ram)
+        {
+            for (const uint32_t pointer : kPlayerPointers)
+                if (const uint32_t object = read32(ram, pointer); isPlayer(ram, object))
+                    return object;
+            return 0;
+        }
+
+        // A world matrix's translation (+at), if it is one (w 1, finite, in the world).
+        bool translation(const uint8_t *ram, uint32_t object, uint32_t at, float out[3])
+        {
+            if (object < 0x100000u || object >= 0x2000000u - 0x200u)
+                return false;
+            float v[4];
+            for (uint32_t k = 0; k < 4; ++k)
+                v[k] = readF(ram, object + at + 4 * k);
+            if (v[3] != 1.0f)
+                return false;
+            for (uint32_t k = 0; k < 3; ++k)
+                if (!std::isfinite(v[k]) || std::fabs(v[k]) > 1e5f)
+                    return false;
+            std::memcpy(out, v, sizeof(float) * 3);
+            return true;
+        }
+        float distance2(const float a[3], const float b[3])
+        {
+            const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        // The goal: the mission state's carry part (+0x440) lists the goal markers at +0x88 (their translation at
+        // +0xc0). Close together (within 80 units of their centre) they are one area: its centre; else the nearest.
+        Place findGoal(const uint8_t *ram, const float at[3])
+        {
+            Place g;
+            const uint32_t mission = read32(ram, kMissionPointer);
+            if (mission < 0x100000u || mission >= 0x2000000u - 0x1000u)
+                return g;
+            float markers[16][3], centre[3] = {0, 0, 0};
+            int n = 0;
+            for (uint32_t i = 0; i < 16; ++i)
+                if (translation(ram, read32(ram, mission + kCarry + kGoalMarkers + 4 * i), kMarkerPosition, markers[n]))
+                {
+                    for (uint32_t k = 0; k < 3; ++k)
+                        centre[k] += markers[n][k];
+                    ++n;
+                }
+            if (!n)
+                return g;
+            for (uint32_t k = 0; k < 3; ++k)
+                centre[k] /= n;
+            bool together = true;
+            for (int i = 0; i < n; ++i)
+                together = together && distance2(markers[i], centre) <= 80.0f * 80.0f;
+            const float *best = centre;
+            if (!together)
+                for (int i = 0; i < n; ++i)
+                    if (best == centre || distance2(markers[i], at) < distance2(best, at))
+                        best = markers[i];
+            g = {true, best[0], best[1], best[2], n};
+            return g;
+        }
+
+        // The item to take: the carriable items' list (the object gp-0x6ca8 gives, its list at +0x3c / +0x40: each
+        // node's +8 an item, its translation at +0xc0), the nearest one more than 3 units from the ninja (the one he
+        // carries moves with him).
+        Place findItem(const uint8_t *ram, const float at[3])
+        {
+            Place p;
+            const uint32_t list = read32(ram, kItemList);
+            if (list < 0x100000u || list >= 0x2000000u - 0x100u)
+                return p;
+            float best[3], v[3], bestD = 0;
+            uint32_t node = read32(ram, list + 0x40);
+            for (int guard = 0; guard < 256 && node != list + 0x3c && node >= 0x100000u && node < 0x2000000u; ++guard)
+            {
+                if (translation(ram, read32(ram, node + 8), kMarkerPosition, v))
+                {
+                    const float d = distance2(v, at);
+                    ++p.count;
+                    if (d > 9.0f && (!p.valid || d < bestD))
+                    {
+                        p.valid = true;
+                        bestD = d;
+                        std::memcpy(best, v, sizeof best);
+                    }
+                }
+                node = read32(ram, node + 4);
+            }
+            if (p.valid)
+                p.x = best[0], p.y = best[1], p.z = best[2];
+            return p;
         }
 
         // A character object's status block (it starts with the object's address again): its offset, 0 when none.
@@ -142,7 +205,10 @@ namespace shino::cheats
                 {
                     const int32_t health = static_cast<int32_t>(read32(ram, object + at + 0x1c));
                     const int32_t max = static_cast<int32_t>(read32(ram, object + at + 0x20));
-                    if (max > 0 && max <= 100000 && health >= 0 && health <= max)
+                    // (another block of the object starts with its address too: its +4 points back into the object;
+                    // the health block's +4 points elsewhere, a table shared by the characters)
+                    const uint32_t link = read32(ram, object + at + 4);
+                    if (max > 0 && max <= 100000 && health >= 0 && health <= max && (link < object || link >= object + 0x2000u))
                         return at;
                 }
             return 0;
@@ -180,7 +246,7 @@ namespace shino::cheats
     {
         if (!enabled(Cheat::Unseen))
             return false;
-        const uint32_t player = read32(ram, kPlayerPointer);
+        const uint32_t player = playerObject(ram);
         return player && (source == player || (source == 0 && position == player + kPosition));
     }
 
@@ -202,15 +268,35 @@ namespace shino::cheats
         std::lock_guard<std::mutex> lock(g_lock);
         g_request = {Kind::By, forward, up, 0};
     }
-    Goal goal()
+    Place goal()
     {
         std::lock_guard<std::mutex> lock(g_lock);
         return g_goal;
+    }
+    Place item()
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        return g_item;
+    }
+    Place enemy()
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        return g_enemy;
     }
     void teleportToGoal()
     {
         std::lock_guard<std::mutex> lock(g_lock);
         g_request = {Kind::Goal, 0, 0, 0};
+    }
+    void teleportToItem()
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        g_request = {Kind::Item, 0, 0, 0};
+    }
+    void teleportToEnemy()
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        g_request = {Kind::Enemy, 0, 0, 0};
     }
     void savePosition(int slot)
     {
@@ -250,9 +336,9 @@ namespace shino::cheats
         (void)once;
         const uint32_t object = playerObject(ram);
         std::lock_guard<std::mutex> lock(g_lock);
-        g_goal = findGoal(ram);
         if (!object)
         {
+            g_goal = g_item = g_enemy = {};
             g_player.valid = false;
             return;
         }
@@ -260,11 +346,30 @@ namespace shino::cheats
             std::memcpy(ram + object + kHealth, ram + object + kMaxHealth, 4);
         int enemies = 0, alive = 0;
         const bool kills = enabled(Cheat::OneHitKills);
-        forEachEnemy(ram, object, [&](uint32_t, uint32_t healthAt) {
+        float here[3];
+        for (uint32_t k = 0; k < 3; ++k)
+            here[k] = readF(ram, object + kPosition + 4 * k);
+        g_goal = findGoal(ram, here);
+        g_item = findItem(ram, here);
+        g_enemy = {};
+        float enemyD = 0;
+        forEachEnemy(ram, object, [&](uint32_t guard, uint32_t healthAt) {
             ++enemies;
             const int32_t health = static_cast<int32_t>(read32(ram, healthAt));
             if (health > 0)
+            {
                 ++alive;
+                float at[3];
+                for (uint32_t k = 0; k < 3; ++k)
+                    at[k] = readF(ram, guard + kPosition + 4 * k);
+                if (const float d = distance2(at, here); std::isfinite(d) && (!g_enemy.valid || d < enemyD))
+                {
+                    enemyD = d;
+                    g_enemy = {true, at[0], at[1], at[2], 0};
+                    g_enemyFacing[0] = readF(ram, guard + kFacing);
+                    g_enemyFacing[1] = readF(ram, guard + kFacing + 8);
+                }
+            }
             if (kills && health > 1) // the dead (0) left alone: the game ends them
             {
                 const int32_t one = 1;
@@ -274,17 +379,35 @@ namespace shino::cheats
         if (g_request.kind != Kind::None)
         {
             float to[3];
-            if (g_request.kind == Kind::Goal)
+            bool go = true;
+            if (g_request.kind == Kind::Goal || g_request.kind == Kind::Item || g_request.kind == Kind::Enemy)
             {
-                if (!g_goal.valid)
+                const Place &place = g_request.kind == Kind::Goal ? g_goal : g_request.kind == Kind::Item ? g_item : g_enemy;
+                if (!place.valid)
                 {
-                    setStatus("No goal: this mission has no goal area (or it is not placed yet).");
-                    g_request = {};
-                    return;
+                    setStatus(g_request.kind == Kind::Goal   ? "No goal: this mission has no goal markers (or not yet)."
+                              : g_request.kind == Kind::Item ? "No item to take in this mission (or it is carried)."
+                                                             : "No enemy left alive.");
+                    go = false;
                 }
-                to[0] = g_goal.x;
-                to[1] = g_goal.y + 1.5f; // a little above the markers' floor
-                to[2] = g_goal.z;
+                to[0] = place.x;
+                to[1] = place.y + 1.5f; // a little above the markers' floor, the item's or the enemy's feet
+                to[2] = place.z;
+                if (g_request.kind == Kind::Item) // beside it, not on it (Grab takes what is in front)
+                {
+                    to[0] -= 1.4f;
+                    to[1] = place.y + 2.0f;
+                }
+                if (g_request.kind == Kind::Enemy) // just behind him, the way he faces
+                {
+                    float fx = g_enemyFacing[0], fz = g_enemyFacing[1];
+                    const float length = std::sqrt(fx * fx + fz * fz);
+                    if (length > 1e-4f)
+                        fx /= length, fz /= length;
+                    to[0] -= fx * 2.0f;
+                    to[1] = place.y + 0.5f;
+                    to[2] -= fz * 2.0f;
+                }
             }
             else if (g_request.kind == Kind::To)
             {
@@ -302,13 +425,20 @@ namespace shino::cheats
                 to[1] = readF(ram, object + kPosition + 4) + g_request.b;
                 to[2] = readF(ram, object + kPosition + 8) + fz * g_request.a;
             }
-            for (uint32_t k = 0; k < 3; ++k)
-                writeF(ram, object + kPosition + 4 * k, to[k]);
-            char text[96];
-            std::snprintf(text, sizeof text, "Teleported to %.1f, %.1f, %.1f.", to[0], to[1], to[2]);
-            setStatus(text);
+            if (go)
+            {
+                for (uint32_t k = 0; k < 3; ++k)
+                    writeF(ram, object + kPosition + 4 * k, to[k]);
+                char text[96];
+                std::snprintf(text, sizeof text, "Teleported to %.1f, %.1f, %.1f.", to[0], to[1], to[2]);
+                setStatus(text);
+            }
             g_request = {};
         }
+        // SHINO_TRACE_ENEMIES=1: the enemies alive, each time it changes (play tests of the kill missions).
+        if (static const bool trace = fromEnvironment("SHINO_TRACE_ENEMIES"); trace && (alive != g_player.enemiesAlive ||
+                                                                                       enemies != g_player.enemies))
+            std::printf("[shino:cheats] enemies %d, %d alive\n", enemies, alive);
         Player &p = g_player;
         p.valid = true;
         p.x = readF(ram, object + kPosition);

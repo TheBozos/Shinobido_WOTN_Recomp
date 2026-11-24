@@ -57,16 +57,22 @@ namespace shino::cheats
             if (ImGui::Button("Up"))
                 teleportBy(0.0f, step);
             ImGui::TextDisabled("Forward and back go the way the ninja faces; up lifts him (he falls back, onto a roof if one is under him).");
-            const Goal g = goal();
-            ImGui::BeginDisabled(!g.valid);
-            if (ImGui::Button("To the mission's goal"))
-                teleportToGoal();
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (g.valid)
-                ImGui::Text("%.1f, %.1f, %.1f (%d markers)", g.x, g.y, g.z, g.markers);
-            else
-                ImGui::TextDisabled("No goal area in this mission (yet).");
+            ImGui::SeparatorText("The mission");
+            auto placeRow = [](const char *label, const Place &place, void (*go)(), const char *none) {
+                ImGui::BeginDisabled(!place.valid);
+                if (ImGui::Button(label))
+                    go();
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (place.valid)
+                    ImGui::Text("%.1f, %.1f, %.1f", place.x, place.y, place.z);
+                else
+                    ImGui::TextDisabled("%s", none);
+            };
+            placeRow("To the goal", goal(), teleportToGoal, "No goal markers in this mission (yet).");
+            placeRow("To the item to take", item(), teleportToItem, "No item to take (or he carries it).");
+            placeRow("To the nearest enemy", enemy(), teleportToEnemy, "No enemy left alive.");
+            ImGui::TextDisabled("The goal: a carry mission's room, or the nearest way out. The enemy: just behind him.");
 
             ImGui::SeparatorText("Saved positions");
             for (int slot = 0; slot < kSlots; ++slot)
