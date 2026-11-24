@@ -484,6 +484,26 @@ into `PS2X_CAPTURE_WINDOW_DIR`; `SHINO_TELEPORT_AT=<frame>:<x>,<y>,<z>;...` tele
 `PS2X_FRAME_CAP=0` the window runs as fast as it can. A fall from 400 units above the grounds kills the ninja whatever
 his health (the game's own fall, `Cut_PlayerFall`): infinite health keeps the number, not him.
 
+## Past the first mission (2026-11-24)
+
+With the cheats, from the frame-5200 save state: `SHINO_TELEPORT_AT=5300:250,400,-200` drops the ninja onto the castle
+keep (the mission's "Go to the castle keep"). The game completes the mission and plays `S126.PSS` (the meeting with
+Lord Ichijo, about 2,400 frames, with its sound), then goes on to the Hideout. Seen there, all drawn and working:
+- the Hideout's help (three pages: Triangle closes the last) and its menu over the 3D hut: Mission Scroll (Missions,
+  Letters, Results, Advice), Equipment (Equip, Buy Items, Sell), Options (sound, aspect ratio, brightness, blood,
+  vibration, camera), To Garden (Enter Garden, Edit), Next (Check Status, Save Game, End Game);
+- Save Game: a new save made and overwritten on memory card slot 1. Since BozoEngine #141 (`290e689`) a save made
+  after loading a state reaches the card's folder (`mc0/BESCES-53931DT/`); before it, it stayed in memory;
+- the mission list (News, "I need your help", "The Amurita Faith is your true home") and the mission scroll (four
+  pages: the story, then type, destination, enemy, requirements and reward). Start accepts; "You have nothing
+  equipped. Continue anyway?" takes Left, then Cross, for Yes;
+- the second mission, a transport mission to Negishi Pavilion: "Mission Start", a new town level, the ninja with the
+  letter's box on his back. The pause menu opens there.
+The client's portrait on the scroll is drawn at half strength (vertex alpha 0x40) between the page and its text
+(the text after it, as the game sends them): where the portrait is dark, dark text is hard to read, by design.
+Save states for these tests: `build/hideout.state` (frame 15700, the Hideout's help), `build/scroll.state` and
+`build/scroll2.state` (the mission scroll's pages 4 and 2).
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is

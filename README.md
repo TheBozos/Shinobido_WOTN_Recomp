@@ -25,10 +25,12 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 
 ## Status
 
-**The game reaches 3D gameplay natively (2026-11-23).** From "New Game" it plays the opening in-engine cutscene at
+**The game reaches 3D gameplay natively (2026-11-23), and plays past the first mission (2026-11-24).** From "New Game" it plays the opening in-engine cutscene at
 Utakata Castle, then hands over control: the ninja runs and climbs through the castle grounds with his HUD (health, the
 detection eyes, the compass), the tutorial messages and the pause menu, and the guards who spot him fight him (2026-11-24:
-nine minutes of scripted play from there, without a fault). Before that, it boots at full speed through "Sony Computer
+nine minutes of scripted play from there, without a fault). With the cheats it completes the first mission, plays the
+story movie that follows and reaches the Hideout: its menus, the mission scroll, a save to the memory card, and the
+second mission's town. Before that, it boots at full speed through "Sony Computer
 Entertainment Europe presents" and the memory card check to the title screen. Everything on screen is drawn from the
 game's own data:
 - the game's render scheduler is replaced natively;
