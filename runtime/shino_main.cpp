@@ -36,24 +36,21 @@ int main(int argc, char **argv)
     windowOptions.title = "Shinobido: Way of the Ninja - BozoEngine";
     windowOptions.width = 960;
     windowOptions.height = 720;
-    // SHINO_CAPTURE_FRAMES=<first>:<last>:<step> or <frame>,<frame>...: the window's picture at those game frames (the
-    // pad script's frames), as frame_<n>.png in PS2X_CAPTURE_WINDOW_DIR (play tests: what the screen shows where).
+    // SHINO_CAPTURE_FRAMES=<item>[,<item>...], each <frame> or <first>:<last>:<step>: the window's picture at those game
+    // frames (the pad script's frames), as frame_<n>.png in PS2X_CAPTURE_WINDOW_DIR (play tests: what the screen shows).
     if (const char *e = std::getenv("SHINO_CAPTURE_FRAMES"))
-    {
-        unsigned long long first, last, step;
-        if (std::sscanf(e, "%llu:%llu:%llu", &first, &last, &step) == 3 && step > 0)
-            for (unsigned long long f = first; f <= last; f += step)
-                windowOptions.captureFrames.push_back(f);
-        else
-            for (const char *p = e; *p;)
-            {
-                char *next;
-                windowOptions.captureFrames.push_back(std::strtoull(p, &next, 10));
-                if (next == p)
-                    break;
-                p = *next ? next + 1 : next;
-            }
-    }
+        for (const char *p = e; p && *p;)
+        {
+            unsigned long long first, last, step;
+            if (std::sscanf(p, "%llu:%llu:%llu", &first, &last, &step) == 3 && step > 0)
+                for (unsigned long long f = first; f <= last; f += step)
+                    windowOptions.captureFrames.push_back(f);
+            else if (std::sscanf(p, "%llu", &first) == 1)
+                windowOptions.captureFrames.push_back(first);
+            p = std::strchr(p, ',');
+            if (p)
+                ++p;
+        }
 #endif
     options.elf = SHINO_DEFAULT_ELF;
     options.iso = SHINO_DEFAULT_ISO;
