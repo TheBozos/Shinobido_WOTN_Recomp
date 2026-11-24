@@ -517,6 +517,25 @@ spotted the ninja (+0x114, from the guards' brains in state 5, `0x17d110`); the 
 (its star is fixed; an arm glows toward nearby enemies).
 The Cheats tab's "To the mission's goal" (and `SHINO_TELEPORT_AT=<frame>:goal`) teleports to the markers' centre.
 
+## The next four missions (2026-11-24)
+
+From the Hideout after the second mission (`build/hideout2.state`), each of the four missions it offers plays to
+"Mission Complete!", its rating and the Hideout:
+- **Thievery** ("Get back what I loaned them", "My document": steal the documents and escape). The goal markers are
+  the level's exits (three, far apart: reached without the documents, "Quit the mission and return to your
+  hideout?"). The documents are a carriable item: the list the object at `gp-0x6ca8` gives (+0x3c / +0x40, each
+  node's +8 an item, its translation at +0xc0). Beside it, Grab (Triangle) takes it; at an exit, "Mission
+  Complete!" and "Send to the recipient right now?".
+- **Total Destruction** ("The barbarians and the town", "Do it in secret": kill all enemies). "Remaining: N" counts
+  down at each kill; the last plays a slow-motion kill camera. One-hit kills, then a teleport just behind each
+  enemy and Square, kill them (unseen, from behind: the game's stealth kills).
+What the cheats needed: the player's object at `gp-0x6a08` (the third mission's load leaves `gp-0x6a0c` pointing at
+freed memory); a character's status block through the pointer at +0x45c (inside the object for the first guards,
++0x620; before it for others, -0x35d0, -0x7190: a scan of the object missed them, and "Do it in secret" kept three
+enemies the cheats could not see).
+Cheats tab: "To the goal" (the markers' centre when close together, else the nearest: an exit), "To the item to
+take", "To the nearest enemy"; `SHINO_TELEPORT_AT` keywords `goal`, `item`, `enemy`; `SHINO_TRACE_ENEMIES=1`.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is

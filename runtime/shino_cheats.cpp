@@ -8,10 +8,10 @@
 //   the way he faces.
 // - His health: +0x64c (an int), out of +0x650 (100 in the first mission).
 // - The characters: a table the pointer at gp-0x6d38 (0x625a38) gives, 16-byte entries from +0x20, the object at +4
-//   (the player first, then the guards). Each character's object has the same layout as the player's and a status
-//   block that starts with its own address again (the player's at +0x630, a guard's at +0x620): health at +0x1c out of
-//   +0x20 (24 for the first mission's guards). Some characters have none (the later missions' townspeople and
-//   escorts: another block starts with their address, its +4 pointing back into them).
+//   (the player first, then the guards). Each character's object has the same layout as the player's; the pointer at
+//   +0x45c gives its status block, which starts with the character's address again (the player's at +0x630, the
+//   first guards' at +0x620, others' before the object): health at +0x1c out of +0x20 (24 for the first mission's
+//   guards).
 // - The guards' senses: each guard's brain (its class's table at 0x61af90, +8 the guard) keeps its stimuli in three
 //   queues of 0x30-byte records (+0x394, +0x3a4, +0x3b4: the source, a state, the position at +0x10, a priority and a
 //   kind at +0x20 / +0x24). Each frame (0x167540) it takes the first into its record at +0x10, then +0x40 (its target:
@@ -50,6 +50,7 @@ namespace shino::cheats
                                      fromEnvironment("SHINO_CHEAT_UNSEEN")};
         constexpr uint32_t kCharacterTable = 0x625a38; // gp-0x6d38
         constexpr uint32_t kMaxCharacters = 128;
+        constexpr uint32_t kStatus = 0x45c; // a character's status block (its health at +0x1c, out of +0x20)
 
         // The teleport asked for (by the tab or SHINO_TELEPORT), made at the next frame the player is in play.
         enum class Kind { None, To, By, Goal, Item, Enemy };
@@ -197,24 +198,18 @@ namespace shino::cheats
             return p;
         }
 
-        // A character object's status block (it starts with the object's address again): its offset, 0 when none.
+        // A character's status block: the pointer at +0x45c (inside the object for some, the player's at +0x630, the
+        // first guards' at +0x620; before it for others, at -0x35d0 or -0x7190), the block starting with the
+        // character's address: its address, 0 when there is none valid.
         uint32_t statusBlock(const uint8_t *ram, uint32_t object)
         {
-            for (uint32_t at = 0x600; at < 0x700; at += 4)
-                if (read32(ram, object + at) == object)
-                {
-                    const int32_t health = static_cast<int32_t>(read32(ram, object + at + 0x1c));
-                    const int32_t max = static_cast<int32_t>(read32(ram, object + at + 0x20));
-                    // (another block of the object starts with its address too: its +4 points back into the object;
-                    // the health block's +4 points elsewhere, a table shared by the characters)
-                    const uint32_t link = read32(ram, object + at + 4);
-                    if (max > 0 && max <= 100000 && health >= 0 && health <= max && (link < object || link >= object + 0x2000u))
-                        return at;
-                }
-            return 0;
+            const uint32_t block = read32(ram, object + kStatus);
+            if (block < 0x100000u || block >= 0x2000000u - 0x40u || read32(ram, block) != object)
+                return 0;
+            const int32_t health = static_cast<int32_t>(read32(ram, block + 0x1c));
+            const int32_t max = static_cast<int32_t>(read32(ram, block + 0x20));
+            return max > 0 && max <= 100000 && health >= 0 && health <= max ? block : 0;
         }
-
-        // Every character but the player, through the character table: f(object, its health's address).
         template <class F> void forEachEnemy(const uint8_t *ram, uint32_t player, F &&f)
         {
             const uint32_t table = read32(ram, kCharacterTable);
@@ -226,7 +221,7 @@ namespace shino::cheats
                 if (object == player || object < 0x100000u || object >= 0x2000000u - 0x1000u || read32(ram, object) != object)
                     continue;
                 if (const uint32_t block = statusBlock(ram, object))
-                    f(object, object + block + 0x1c);
+                    f(object, block + 0x1c);
             }
         }
 
