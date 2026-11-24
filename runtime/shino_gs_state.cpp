@@ -18,7 +18,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
+#include <string>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -420,12 +422,43 @@ namespace shino::gs
             uint64_t made = 0; // the material's serial (emit): batches with the same one and texture merge
         };
         std::unordered_map<uint32_t, std::vector<Batch>> g_frameDraws; // FRAME.FBP -> draws in order
+        std::map<std::string, uint64_t> g_survey;                      // SHINO_SURVEY
+        uint32_t g_displayFbp = 0;                                     // the frame buffer shown last
         uint64_t g_prims = 0, g_offscreenPrims = 0, g_flips = 0, g_uploads = 0, g_checksum = 0xCBF29CE484222325ull;
+
+        // The frame buffers the game displays (DISPFB's FBP, flip), as TEX0's block pointers: a texture there is a frame.
+        std::array<uint32_t, 4> g_frameBuffers{~0u, ~0u, ~0u, ~0u};
+        // A texture that is the other displayed frame buffer: the previous frame (the game blends it over the new one,
+        // an afterimage, every frame of play). The renderer samples its copy of the frame presented last.
+        bool samplesPreviousFrame(const Context &c, uint64_t attrs)
+        {
+            if (!((attrs >> 4) & 1u))
+                return false;
+            const uint32_t tbp = c.tex0 & 0x3FFFu, psm = (c.tex0 >> 20) & 0x3Fu, target = (c.frame & 0x1FFu) * 32u;
+            if ((psm != 0x00 && psm != 0x01) || tbp == target)
+                return false;
+            for (const uint32_t b : g_frameBuffers)
+                if (b == tbp)
+                    return true;
+            return false;
+        }
 
         Material material(const Context &c, uint64_t attrs)
         {
             Material m;
             m.textured = (attrs >> 4) & 1u;
+            if (samplesPreviousFrame(c, attrs))
+            {
+                m.fromFrame = 1;
+                m.source = Material::kPreviousFrame;
+            }
+            // FRAME's FBMSK: a channel all of whose 8 bits are masked is not written (the game's depth-only draws mask
+            // all 32: textured, about 16 a frame in play).
+            const uint32_t fbmsk = static_cast<uint32_t>(c.frame >> 32);
+            m.colourMask = 0;
+            for (uint32_t channel = 0; channel < 4; ++channel)
+                if (((fbmsk >> (8 * channel)) & 0xFFu) != 0xFFu)
+                    m.colourMask |= static_cast<uint8_t>(1u << channel);
             // TEST's ZTE / ZTST (GEQUAL, GREATER; ALWAYS no test; NEVER is not drawn, emit), ZBUF's ZMSK.
             const uint32_t ztst = ((c.test >> 16) & 1u) ? uint32_t(c.test >> 17) & 3u : 1u;
             m.depthTest = ztst >= 2;
@@ -459,8 +492,11 @@ namespace shino::gs
         {
             const Context &c = g_s.ctx[(attrs >> 9) & 1u];
             const bool textured = (attrs >> 4) & 1u, fst = (attrs >> 8) & 1u, gouraud = (attrs >> 3) & 1u;
-            std::shared_ptr<const Texture> tex = textured ? texture(c.tex0) : nullptr;
-            const float tw = tex ? float(tex->width) : 1.0f, th = tex ? float(tex->height) : 1.0f;
+            const bool previousFrame = samplesPreviousFrame(c, attrs);
+            std::shared_ptr<const Texture> tex = textured && !previousFrame ? texture(c.tex0) : nullptr;
+            // The texture's size: decoded, or TEX0's for the previous frame (u, v across the frame, 0 to 1)
+            const float tw = tex ? float(tex->width) : previousFrame ? float(1u << ((c.tex0 >> 26) & 0xFu)) : 1.0f;
+            const float th = tex ? float(tex->height) : previousFrame ? float(1u << ((c.tex0 >> 30) & 0xFu)) : 1.0f;
             auto make = [&](const GsVertex &g, uint32_t colour) {
                 Vertex r;
                 r.x = g.x;
@@ -550,6 +586,32 @@ namespace shino::gs
                 for (const Vertex &x : out)
                     for (const uint8_t b : std::bit_cast<std::array<uint8_t, sizeof(Vertex)>>(x))
                         g_checksum = (g_checksum ^ b) * 0x100000001B3ull;
+            // SHINO_SURVEY=1: the primitives by what the renderer does not do yet (a scissor short of the frame, FRAME's
+            // FBMSK, a texture where a frame buffer is), every 250 flips.
+            if (static const bool survey = std::getenv("SHINO_SURVEY") != nullptr; survey)
+            {
+                const uint32_t fbmsk = static_cast<uint32_t>(c.frame >> 32), fbw = ((c.frame >> 16) & 0x3Fu) * 64u;
+                const uint32_t x1 = (c.scissor >> 16) & 0x7FFu, y1 = (c.scissor >> 48) & 0x7FFu;
+                const bool clipped = (c.scissor & 0x7FFu) != 0 || ((c.scissor >> 32) & 0x7FFu) != 0 || x1 + 1 < fbw || y1 + 1 < 448;
+                const uint32_t tbp = c.tex0 & 0x3FFFu;
+                const bool fromFrame = textured && (tbp == (c.frame & 0x1FFu) * 32u || tbp == 0u || tbp == 0x1180u /* 0x8c*32 */);
+                char key[160];
+                std::snprintf(key, sizeof(key), "fbp=%x%s%s%s%s", unsigned(c.frame & 0x1FFu),
+                              clipped ? " scissor" : "", fbmsk ? " fbmsk" : "", fromFrame ? " tex-from-frame" : "",
+                              (c.frame & 0x1FFu) != g_displayFbp ? " offscreen" : "");
+                if (clipped || fbmsk || fromFrame)
+                {
+                    char detail[96];
+                    if (fromFrame)
+                        std::snprintf(detail, sizeof(detail), " [type %u tex0 %llx alpha %llx xy %.0f,%.0f %.0f,%.0f]", type,
+                                      (unsigned long long)c.tex0, (unsigned long long)c.alpha, out[0].x, out[0].y,
+                                      out[out.size() / 2].x, out[out.size() / 2].y);
+                    else
+                        std::snprintf(detail, sizeof(detail), " [scissor %llx fbmsk %08x tbp %x]", (unsigned long long)c.scissor, fbmsk, tbp);
+                    std::strncat(key, detail, sizeof(key) - std::strlen(key) - 1);
+                }
+                ++g_survey[key];
+            }
             if (((c.test >> 16) & 1u) && ((c.test >> 17) & 3u) == 0u)
                 return; // ZTST NEVER
             const uint32_t fbp = c.frame & 0x1FFu;
@@ -558,13 +620,13 @@ namespace shino::gs
             // Z), ZB_ONLY their Z (not the colour), RGB_ONLY their RGB: a second pass with the opposite test.
             struct Made
             {
-                uint64_t in[7] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
+                uint64_t in[8] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
                 Material pass, fail;
                 bool drawPass = true, twoPass = false;
                 uint64_t serial = 0; // even: the pass, odd: the failing pixels
             };
             static Made made;
-            const uint64_t in[7] = {c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf, attrs & 0x150u};
+            const uint64_t in[8] = {c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf, attrs & 0x150u, c.frame};
             if (std::memcmp(in, made.in, sizeof(in)) != 0)
             {
                 std::memcpy(made.in, in, sizeof(in));
@@ -938,6 +1000,19 @@ namespace shino::gs
         ++g_flips;
         auto &renderer = bozo::render::Renderer::instance();
         const uint32_t fbp = dispfb & 0x1FFu;
+        g_displayFbp = fbp;
+        if (std::find(g_frameBuffers.begin(), g_frameBuffers.end(), fbp * 32u) == g_frameBuffers.end())
+        {
+            std::rotate(g_frameBuffers.rbegin(), g_frameBuffers.rbegin() + 1, g_frameBuffers.rend());
+            g_frameBuffers[0] = fbp * 32u;
+        }
+        if (!g_survey.empty() && g_flips % 250 == 0)
+        {
+            std::printf("[shino:survey] flips %llu:\n", (unsigned long long)g_flips);
+            for (const auto &[what, count] : g_survey)
+                std::printf("[shino:survey]   %8llu %s\n", (unsigned long long)count, what.c_str());
+            g_survey.clear();
+        }
         bozo::render::Screen screen;
         const uint64_t off = g_s.ctx[0].xyoffset;
         screen.originX = 0.0f; // the vertices are window pixels already (vertexKick)

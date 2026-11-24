@@ -260,11 +260,24 @@ time a flip, exclusive; `SHINO_RATE=1` the rate alone):
 - `SHINO_CHECKSUM=1`: a hash of every vertex drawn, every 500 flips; all the changes above keep it, through the boot,
   New Game, the cutscene and play.
 
+## Scissor, FBMSK, the frame as a texture (2026-11-24)
+
+`SHINO_SURVEY=1` counts the primitives by what the renderer was not doing, every 250 flips. From the boot through the
+cutscene and play:
+- **The previous frame, blended over the new one.** Each frame one full-screen triangle fan (TEX0 `0x264020000`: CT32,
+  512 x 512, at the other displayed buffer; ALPHA `0x44`, the vertex alpha) draws the frame shown last over the frame
+  being drawn: an afterimage (the cutscene's moving figures trail). The port's GS memory has no rendered frames, so the
+  fan blended old memory (black) instead, which darkened the sky. A CT32 / CT24 texture at a displayed frame buffer
+  other than the one drawn into is now the renderer's previous frame (`Material::fromFrame`, `kPreviousFrame`), u and
+  v across it by TEX0's size.
+- **FRAME's FBMSK.** About 16 textured primitives a frame in play mask all 32 bits (depth only): a channel whose 8 bits
+  are all masked is not written (`Material::colourMask`).
+- **Scissor**: never narrower than the frame in these scenes. **Offscreen draws** (into a buffer never displayed): none.
+
 ## Next
 
 - Speed: the castle's load and the cutscene's start (frames 1500 to 1900 of the New Game run) at 15 frames a second.
-- 3D: scissor, FBMSK and the offscreen draws (render-to-texture) are not drawn; then native draws at the game's model
-  functions.
+- 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).
 
