@@ -135,44 +135,24 @@ namespace shino
             case 0x08: case 0x09: case 0x0A: case 0x0B: arith(2, 1, true, 0); return;
             case 0x0C: case 0x0D: case 0x0E: case 0x0F: arith(3, 1, true, 0); return;
             case 0x10: case 0x11: case 0x12: case 0x13: // ITOF0/4/12/15: ft = float(fs) / 2^n
-            {
-                static const float scale[4] = {1.0f, 1.0f / 16.0f, 1.0f / 4096.0f, 1.0f / 32768.0f};
                 out.writes = true; out.reg = ft;
-                for (int f = 0; f < 4; ++f)
-                    out.value.f[f] = float(static_cast<int32_t>(asU(S.f[f]))) * scale[sp - 0x10];
+                out.value = vu::itof(v, fs, static_cast<int>(sp - 0x10));
                 return;
-            }
             case 0x14: case 0x15: case 0x16: case 0x17: // FTOI0/4/12/15
-            {
-                static const float scale[4] = {1.0f, 16.0f, 4096.0f, 32768.0f};
                 out.writes = true; out.reg = ft;
-                for (int f = 0; f < 4; ++f)
-                {
-                    const double d = double(S.f[f]) * scale[sp - 0x14];
-                    const int32_t n = d >= 2147483647.0 ? INT32_MAX : d <= -2147483648.0 ? INT32_MIN : static_cast<int32_t>(d);
-                    out.value.f[f] = asF(static_cast<uint32_t>(n));
-                }
+                out.value = vu::ftoi(v, fs, static_cast<int>(sp - 0x14));
                 return;
-            }
             case 0x18: case 0x19: case 0x1A: case 0x1B: arith(4, 1, true, 0); return;
             case 0x1C: arith(4, 2, true, 0); return; // MULAq
             case 0x1D: // ABS
                 out.writes = true; out.reg = ft;
-                for (int f = 0; f < 4; ++f)
-                    out.value.f[f] = std::fabs(S.f[f]);
+                out.value = vu::absv(v, fs);
                 return;
             case 0x1E: arith(4, 3, true, 0); return; // MULAi
             case 0x1F: // CLIP: fs.xyz against ft.w
-            {
-                const float wv = std::fabs(T.f[3]);
-                uint32_t bits = 0;
-                if (S.f[0] > wv) bits |= 1; if (S.f[0] < -wv) bits |= 2;
-                if (S.f[1] > wv) bits |= 4; if (S.f[1] < -wv) bits |= 8;
-                if (S.f[2] > wv) bits |= 16; if (S.f[2] < -wv) bits |= 32;
                 out.clip = true;
-                out.clipValue = ((v.clip << 6) | bits) & 0xFFFFFFu;
+                out.clipValue = vu::clipFlags(v, fs, ft);
                 return;
-            }
             case 0x20: arith(0, 2, true, 0); return; // ADDAq
             case 0x21: arith(2, 2, true, 0); return; // MADDAq
             case 0x22: arith(0, 3, true, 0); return; // ADDAi

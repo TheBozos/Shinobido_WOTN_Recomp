@@ -32,7 +32,8 @@ nine minutes of scripted play from there, without a fault). Before that, it boot
 Entertainment Europe presents" and the memory card check to the title screen. Everything on screen is drawn from the
 game's own data:
 - the game's render scheduler is replaced natively;
-- its VU1 microprograms (its 2D and 3D both run through them) and the 3D's VU0 microprograms are executed by the port;
+- its VU1 microprograms (its 2D and 3D both run through them) are recompiled to C++ from the player's executable at
+  build time, the 3D's VU0 microprograms interpreted;
 - the GS packets they send become native draws with the GS's depth test, the textures decoded from the game's own
   uploads in the order the game interleaves them with its draws.
 
@@ -43,10 +44,9 @@ its music.
 audio fed through the game's own player to the IOP.
 
 **The game runs at full speed**: 25 frames a second, as on a PAL console (the game draws a frame every second field),
-the 3D gameplay included.
+the castle's load, the cutscene and the 3D gameplay included (2026-11-24, with the VU1 microprograms recompiled).
 
 In progress:
-- **Loading the castle** runs at about 15 frames a second for a few seconds, before the opening cutscene.
 - **Sound in play**: the music and the sound effects play (the effects as the ninja acts); how they sound, and the
   cutscene's spoken lines, are still to be checked by ear.
 
@@ -95,7 +95,8 @@ disc (your ISO) ──► scripts/extract_iso.sh ──► game/ (SCES_539.31, I
 - `runtime/shino_port.cpp` registers the port's overrides by address and its native instruction sites;
   `runtime/shino_main.cpp` is the headless runner and the window.
 - Drawing (bring-up path): `runtime/shino_render.cpp` answers the game's render scheduler and its vblank flip;
-  `runtime/shino_vu1.cpp` runs the VIF1 stream and the game's VU1 microprograms; `runtime/shino_gs.cpp` and
+  `runtime/shino_vu1.cpp` runs the VIF1 stream and the game's VU1 microprograms, which `tools/shino_vu1_recomp.py`
+  recompiles from the executable's microcode packets (an interpreter for the rest); `runtime/shino_gs.cpp` and
   `runtime/shino_gs_state.cpp` turn their GS packets into native draws and decode the textures from the game's
   uploads. To be replaced by native draws at the game's own functions, as the other ports do.
 - Sound: `tools/shino_bozo_audio.py` compiles the IOP sound modules from the disc (BozoEngine's `tools/native_irx`),
@@ -155,7 +156,7 @@ pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,libarchive,pyt
 | `BozoEngine/` | the engine (submodule, pinned) |
 | `runtime/` | the port: overrides, native sites, the runner and the window (`app/`: icon, manifest, version) |
 | `recomp/` | the symbol map of the stripped ELF and the names read by hand |
-| `tools/` | the ELF's preparation, the overrides list, the RPC pairing, a disassembler with the map's names |
+| `tools/` | the ELF's preparation, the overrides list, the VU1 recompiler, the RPC pairing, the disassemblers |
 | `scripts/` | extract, symbols, build, run |
 | `docs/` | recompilation notes, branding (`docs/branding/make_logo.py`) |
 

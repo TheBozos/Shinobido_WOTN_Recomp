@@ -18,6 +18,7 @@ Writes <out dir>/shino_vu1_table.cpp and shino_vu1_NN.cpp (N files, 8 by default
 repository: the output goes to the build.
 """
 import os
+import re
 import struct
 import sys
 
@@ -143,10 +144,20 @@ class Pair:
                 self.arith(3, 0, True)
             elif sp == 0x2F:
                 self.kind = 'nop'
+            elif 0x10 <= sp <= 0x13:
+                self.kind, self.fn = 'itof', sp - 0x10
+            elif 0x14 <= sp <= 0x17:
+                self.kind, self.fn = 'ftoi', sp - 0x14
+            elif sp == 0x1D:
+                self.kind = 'abs'
+            elif sp == 0x1F:
+                self.kind = 'clip'
         self.sets_mac = self.kind == 'arith' and self.fn <= 4
         # Whether the upper instruction writes the MAC flags: the arithmetic but on vf0; OPMSUB, OPMULA (upper()).
         if self.kind == 'arith':
             self.writes_mac = self.sets_mac and (self.to_acc or self.fd != 0)
+        elif self.kind != 'scalar':
+            self.writes_mac = False
         else:
             sp = ((up >> 6) & 0x1F) << 2 | (up & 3)
             self.writes_mac = (op == 0x2E and self.fd != 0) or (op >= 0x3C and sp == 0x2E)
@@ -191,8 +202,12 @@ class Pair:
         if op in (0x08, 0x09):
             self.imm = ((lo >> 10) & 0x7800) | (lo & 0x7FF)
             return 'IADDIU' if op == 0x08 else 'ISUBIU'
-        return {0x20: 'B', 0x21: 'BAL', 0x24: 'JR', 0x25: 'JALR', 0x28: 'IBEQ', 0x29: 'IBNE', 0x2C: 'IBLTZ',
-                0x2D: 'IBGTZ', 0x2E: 'IBLEZ', 0x2F: 'IBGEZ'}.get(op, 'SLOW')
+        if op in (0x10, 0x11, 0x12, 0x13):
+            self.imm = lo & 0xFFFFFF
+            return {0x10: 'FCEQ', 0x11: 'FCSET', 0x12: 'FCAND', 0x13: 'FCOR'}[op]
+        return {0x18: 'FMEQ', 0x1A: 'FMAND', 0x1B: 'FMOR', 0x1C: 'FCGET', 0x20: 'B', 0x21: 'BAL', 0x24: 'JR',
+                0x25: 'JALR', 0x28: 'IBEQ', 0x29: 'IBNE', 0x2C: 'IBLTZ', 0x2D: 'IBGTZ', 0x2E: 'IBLEZ',
+                0x2F: 'IBGEZ'}.get(op, 'SLOW')
 
     @property
     def branch(self):
@@ -275,11 +290,6 @@ class Image:
             todo.extend(self.successors(n))
         self.reach = reach
         self.entry_set = set(p for _, p in entries)
-        preds = {n: [] for n in reach}
-        for n in reach:
-            for s in self.successors(n):
-                if s != EXIT:
-                    preds[s].append(n)
         bails = {n for n in reach if n[0] == 's' and self.bail(n[1])}
         # Q: the largest countdown possible at each node's start (forward) from the DIV / SQRT / RSQRT before it; an
         # entry with a longer one pending goes to the interpreter (the dispatch's check).
@@ -352,17 +362,23 @@ class Image:
 
 # ---- C++ ------------------------------------------------------------------------------------------------------------------
 
-def emit_pair(img, node, out, branch_vars=False):
+def emit_pair(img, node, out):
     """One pair's code (in braces); a branch's lower instruction sets `take` / `to` of the enclosing block."""
     p = node[1]
     x = img.pairs[p]
     w = out.append
     w('    {')
-    w('        ++v.pairs;')
+    w('        ++n;')
     if img.q[node] > 0:
         w('        qTick(v);')
     if x.kind == 'arith':
         w(f'        const __m128 u = arith(v, {x.fn}, {x.operand}, {x.fs}, {x.ft}, {x.bc});')
+    elif x.kind in ('itof', 'ftoi'):
+        w(f'        const Vec u = {x.kind}(v, {x.fs}, {x.fn});')
+    elif x.kind == 'abs':
+        w(f'        const Vec u = absv(v, {x.fs});')
+    elif x.kind == 'clip':
+        w(f'        const uint32_t u = clipFlags(v, {x.fs}, {x.ft});')
     elif x.kind == 'scalar':
         w('        UpperResult u;')
         w(f'        upperSlow(0x{x.up:08x}u, u);')
@@ -381,22 +397,30 @@ def emit_pair(img, node, out, branch_vars=False):
         'ISUBIU': f'setVi(v, {t_}, {vi(s_)} - {x.imm}u);',
         'MOVE': f'setVf(v, {t_}, {x.ldest}, vf(v, {s_}));',
         'MR32': f'setVf(v, {t_}, {x.ldest}, mr32(v, {s_}));',
-        'LQI': f'setVf(v, {t_}, {x.ldest}, load(v, {vi(s_)})); setVi(v, {s_}, {vi(s_)} + 1);',
-        'SQI': f'store(v, {vi(t_)}, {s_}, {x.ldest}); setVi(v, {t_}, {vi(t_)} + 1);',
-        'LQD': f'setVi(v, {s_}, {vi(s_)} - 1); setVf(v, {t_}, {x.ldest}, load(v, {vi(s_)}));',
-        'SQD': f'setVi(v, {t_}, {vi(t_)} - 1); store(v, {vi(t_)}, {s_}, {x.ldest});',
-        'LQ': f'setVf(v, {t_}, {x.ldest}, load(v, {vi(s_)} + {x.imm & 0xFFFFFFFF}u));',
-        'SQ': f'store(v, {vi(t_)} + {x.imm & 0xFFFFFFFF}u, {s_}, {x.ldest});',
-        'ILW': f'ilw(v, {t_}, {vi(s_)} + {x.imm & 0xFFFFFFFF}u, {x.ldest});',
-        'ILWR': f'ilw(v, {t_}, {vi(s_)}, {x.ldest});',
-        'ISW': f'isw(v, {t_}, {vi(s_)} + {x.imm & 0xFFFFFFFF}u, {x.ldest});',
-        'ISWR': f'isw(v, {t_}, {vi(s_)}, {x.ldest});',
+        'LQI': f'setVf(v, {t_}, {x.ldest}, load1(v, {vi(s_)})); setVi(v, {s_}, {vi(s_)} + 1);',
+        'SQI': f'store1(v, {vi(t_)}, {s_}, {x.ldest}); setVi(v, {t_}, {vi(t_)} + 1);',
+        'LQD': f'setVi(v, {s_}, {vi(s_)} - 1); setVf(v, {t_}, {x.ldest}, load1(v, {vi(s_)}));',
+        'SQD': f'setVi(v, {t_}, {vi(t_)} - 1); store1(v, {vi(t_)}, {s_}, {x.ldest});',
+        'LQ': f'setVf(v, {t_}, {x.ldest}, load1(v, {vi(s_)} + {x.imm & 0xFFFFFFFF}u));',
+        'SQ': f'store1(v, {vi(t_)} + {x.imm & 0xFFFFFFFF}u, {s_}, {x.ldest});',
+        'ILW': f'ilw1(v, {t_}, {vi(s_)} + {x.imm & 0xFFFFFFFF}u, {x.ldest});',
+        'ILWR': f'ilw1(v, {t_}, {vi(s_)}, {x.ldest});',
+        'ISW': f'isw1(v, {t_}, {vi(s_)} + {x.imm & 0xFFFFFFFF}u, {x.ldest});',
+        'ISWR': f'isw1(v, {t_}, {vi(s_)}, {x.ldest});',
         'MTIR': f'mtir(v, {t_}, {s_}, {x.fsf});',
         'MFIR': f'mfir(v, {t_}, {s_}, {x.ldest});',
         'DIV': f'divide(v, 0, {s_}, {x.fsf}, {t_}, {x.ftf});',
         'SQRT': f'divide(v, 1, {s_}, {x.fsf}, {t_}, {x.ftf});',
         'RSQRT': f'divide(v, 2, {s_}, {x.fsf}, {t_}, {x.ftf});',
         'WAITQ': 'waitQ(v);',
+        'FMEQ': f'setVi(v, {t_}, {vi(s_)} == v.macHistory[v.macAt & 3u]);',
+        'FMAND': f'setVi(v, {t_}, {vi(s_)} & v.macHistory[v.macAt & 3u]);',
+        'FMOR': f'setVi(v, {t_}, {vi(s_)} | v.macHistory[v.macAt & 3u]);',
+        'FCEQ': f'v.vi[1] = (v.clip & 0xFFFFFFu) == {x.imm}u;',
+        'FCSET': f'v.clip = {x.imm}u;',
+        'FCAND': f'v.vi[1] = (v.clip & {x.imm}u) != 0;',
+        'FCOR': f'v.vi[1] = ((v.clip | {x.imm}u) & 0xFFFFFFu) == 0xFFFFFFu;',
+        'FCGET': f'setVi(v, {t_}, v.clip & 0xFFFu);',
         'SLOW': f'lowerSlow(0x{x.lo:08x}u, 0x{x.pc:04x}u);',
         'B': 'take = true;',
         'BAL': f'setVi(v, {t_}, {(x.pc + 16) // 8}u); take = true;',
@@ -414,6 +438,10 @@ def emit_pair(img, node, out, branch_vars=False):
     if x.kind == 'arith':
         flags = 'true' if img.flags(node) else 'false'
         w(f'        commitArith(v, {"true" if x.to_acc else "false"}, {x.fd}, {x.dest}, {flags}, u);')
+    elif x.kind in ('itof', 'ftoi', 'abs'):
+        w(f'        setVf(v, {x.ft}, {x.dest}, _mm_loadu_ps(u.f));')
+    elif x.kind == 'clip':
+        w('        v.clip = u;')
     elif x.kind == 'scalar':
         w('        commitSlow(u);')
     if img.push[node]:
@@ -435,7 +463,7 @@ def emit_image(img):
     w(f'// From the packet at 0x{img.address:x}: pairs 0x{img.first:03x} to 0x{img.last:03x}.')
     w(f'uint32_t {name}(Unit &v, uint32_t pc)')
     w('{')
-    w('    uint32_t guard = 0;')
+    w('    uint32_t guard = 0, n = 0; // n: the pairs run (v.pairs, on the way out)')
     w('dispatch:')
     w('    switch (pc)')
     w('    {')
@@ -505,7 +533,8 @@ def emit_image(img):
                     w(f'    goto L{n:03x};')
         w('    }')
     w('}')
-    return out
+    # every way out adds the pairs run to v.pairs (RET)
+    return [re.sub(r'\breturn ([^;]+);', r'RET(\1);', line) for line in out]
 
 
 def main():
@@ -528,8 +557,9 @@ def main():
         buckets[k].append(img)
         sizes[k] += len(img.code)
     head = ['// Generated by tools/shino_vu1_recomp.py from the player\'s SCES_539.31: do not edit, do not commit.',
-            '#include "shino_vu.h"', '', 'namespace shino::vu', '{']
-    stats = {'pairs': 0, 'bails': 0, 'entries': 0}
+            '#include "shino_vu.h"', '', '#define RET(x) do { v.pairs += n; return (x); } while (0)', '',
+            'namespace shino::vu', '{']
+    stats = {'pairs': 0, 'bails': 0}
     for k, bucket in enumerate(buckets):
         lines = list(head)
         for img in sorted(bucket, key=lambda m: m.id):
@@ -538,7 +568,6 @@ def main():
             lines.extend(emit_image(img))
             stats['pairs'] += len(img.code)
             stats['bails'] += len(img.bails)
-            stats['entries'] += len(img.entry_set)
         lines.append('} // namespace shino::vu')
         write(os.path.join(out_dir, f'shino_vu1_{k:02d}.cpp'), lines)
     table = list(head)
@@ -552,7 +581,7 @@ def main():
     table.append(f'const uint32_t kImageCount = {len(imgs)};')
     table.append('} // namespace shino::vu')
     write(os.path.join(out_dir, 'shino_vu1_table.cpp'), table)
-    print(f'shino_vu1_recomp: {len(imgs)} images, {stats["pairs"]} pairs, {stats["entries"]} entries, '
+    print(f'shino_vu1_recomp: {len(imgs)} images, {stats["pairs"]} pairs, '
           f'{stats["bails"]} pairs left to the interpreter')
 
 

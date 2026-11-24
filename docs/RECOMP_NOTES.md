@@ -112,8 +112,9 @@ bits 8-9, QWC in 12-27). `runtime/shino_render.cpp` replaces it: the list is dra
 chain walked; the vblank handler `0x442fb0` makes the flip (DISPFB1 / DISPLAY1 of the display environment, the field's
 GIF chain) and publishes the frame. Nearly everything, the 2D included, is drawn by VU1 programs the game uploads with
 MPG and feeds with UNPACK: `runtime/shino_vu1.cpp` reads the VIF1 stream (STCYCL, STMOD, STMASK, STROW/STCOL, the
-TOPS double buffer) and runs the programs (pair semantics: the lower reads before the upper commits; Q's latency; the
-MAC flags 4 pairs late; branch delay slots; the E bit; vf0 the constant (0, 0, 0, 1)). XGKICK's packets (PATH1),
+TOPS double buffer) and runs the programs, recompiled (below, "VU1 microprograms, recompiled") or interpreted (pair
+semantics: the lower reads before the upper commits; Q's latency; the MAC flags 4 pairs late; branch delay slots; the
+E bit; vf0 the constant (0, 0, 0, 1)). XGKICK's packets (PATH1),
 DIRECT's (PATH2) and the GIF channel's (PATH3) go to `runtime/shino_gs.cpp` / `shino_gs_state.cpp`: the GS registers
 are kept, primitives become `Renderer::draw` triangles in window pixels (each vertex less its context's XYOFFSET, an
 identity matrix), and the textures are decoded from a copy of the GS local memory the image transfers fill (the GS's block and
@@ -242,11 +243,12 @@ Three things made the 3D's surfaces wrong (flat colours, green walls, rainbow st
 The game runs at 25 frames a second (PAL pacing, below), and play holds it in the window: about 40 frames a second
 of headroom headless. A gameplay frame was about 66 ms (2026-11-23); what it took, by `SHINO_PROFILE=1` (each part's
 time a flip, exclusive; `SHINO_RATE=1` the rate alone):
-- **VU1** (1.9M instruction pairs a frame): each pair decoded once (`Decoded`, checked against the raw words, so a new
-  MPG needs no invalidation); the upper's arithmetic on whole vectors (SSE: MAX / MINI as `std::max` / `std::min` on
-  ±0, NaN 0, clamped), the common lower instructions from the decoding (`lowerFast`), the rest through the scalar
-  `upper()` / `lower()`. About twice as fast. `SHINO_VU_SCALAR=1` runs the scalar path, `SHINO_LOWER_SLOW=<mask>` the
-  lower kinds in the mask through `lower()`: the checks.
+- **VU1** (1.9M instruction pairs a frame in play, 3.4M at the castle's load): recompiled since (next section). The
+  interpreter, for what the compiled code hands it: each pair decoded once (`Decoded`, checked against the raw words, so
+  a new MPG needs no invalidation); the upper's arithmetic on whole vectors (SSE: MAX / MINI as `std::max` /
+  `std::min` on ±0, NaN 0, clamped), the common lower instructions from the decoding (`lowerFast`), the rest through
+  the scalar `upper()` / `lower()`. `SHINO_VU_SCALAR=1` runs the scalar path, `SHINO_LOWER_SLOW=<mask>` the lower
+  kinds in the mask through `lower()`: the checks.
 - **VIF**: codes counted in an array (a `std::map` before); a command's data used in place when the chunk holds it all;
   UNPACK's common case (no mask, no fill, STMOD 0, whole-byte elements) without the bit reader.
 - **Uploads** (all CT32 or CT16, about 1 MB a frame: the 4- and 8-bit textures go up as 32- and 16-bit pixels):
@@ -259,6 +261,42 @@ time a flip, exclusive; `SHINO_RATE=1` the rate alone):
   and texture merge into one batch, a two-pass (AFAIL) run keeping its passes in two (before, two batches a triangle).
 - `SHINO_CHECKSUM=1`: a hash of every vertex drawn, every 500 flips; all the changes above keep it, through the boot,
   New Game, the cutscene and play.
+
+## VU1 microprograms, recompiled (2026-11-24)
+
+The game keeps all its VU1 code in its executable, as DMA packets ready for VIF1: a tag (cnt or ret) whose data are
+only NOP and MPG codes, each MPG's instruction pairs after it. It sends one before the programs that use it, about 25
+a frame in play (`SHINO_VU_SURVEY=1`: the MPG uploads by EE address, and the programs run, by start and the code
+loaded). The 3D sets fill pairs `0x000` to `0x7ff` from 256-pair MPGs; small 2D sets load over the start of one.
+
+`tools/shino_vu1_recomp.py` finds every such packet in the player's executable by its shape (123 sets, 126,853 pairs)
+and writes one C++ function per set into the build (`build/bozo/shino_vu1_gen/`, eight files; nothing from the disc in
+the repository). The compiled code runs the interpreter's own operations (`runtime/shino_vu.h`, shared with
+`runtime/shino_vu1.cpp`), pair by pair with constant operands: the upper computed before the lower, committed after
+it; the branches' delay slot; the E bit; FMAND / FMEQ / FMOR on the MAC flags of 4 pairs earlier. What no instruction
+can see is left out, from the control flow of the set:
+- Q's countdown, where no DIV / SQRT / RSQRT result can still be pending (forward, the longest countdown at each pair);
+- the MAC flags' history, where no FMAND / FMEQ / FMOR reads it within 4 pairs and the program goes on in the set;
+- the MAC flags themselves (and STATUS's two bits from them), where the next result replaces them before any read.
+The rarer instructions (OPMULA / OPMSUB, XGKICK, the EFU, FS*, the R register) go through the interpreter's
+functions. A branch in a delay slot, or an E bit on a branch, would go to the interpreter (none in this game).
+
+At run time (`runtime/shino_vu1.cpp`): a program runs in the set whose code is the one loaded at its pc, checked by
+64-pair segment and checked again only after an MPG changed the segment (`vu::segmentOk`); where the program goes on
+in another set's code (the 3D sets' last pairs stay loaded under the next set), it moves to that set. Every pair is an
+entry (a program's start, JR's targets), with one condition: Q's countdown no longer than the code there counts down;
+otherwise the interpreter runs the pairs until a set can take the program back.
+
+Checks: `SHINO_VU_VERIFY=1` runs each program compiled and then interpreted from the same state and compares
+everything (registers, flags, Q's countdown, the history's last 4, data memory, TPC, kicks): the New Game run's 728k
+programs and the play from the frame-5200 save state, none different. The vertex checksums (`SHINO_CHECKSUM=1`) are
+the interpreter's. `SHINO_VU_INTERP=1` runs the interpreter alone.
+
+Speed: at the castle's load the VU1 takes 8 to 10 ms a frame (3.4M pairs; about 30 ms interpreted). Headless, the load
+and the cutscene's start went from 12 to 17 frames a second to 30 to 36, play from 29 to about 60. In the window, the
+load and the cutscene's start hold 24 to 25 frames a second (16 to 17 before), and play near several guards 24 to 25
+(down to 19.5 before). The GS translator (10 ms a frame at the load), VIF (6 ms), the texture decodes and uploads are
+now the larger parts.
 
 ## Scissor, FBMSK, the frame as a texture (2026-11-24)
 
@@ -293,7 +331,8 @@ strong yellow light on some walls.
 
 ## Next
 
-- Speed: the castle's load and the cutscene's start (frames 1500 to 1900 of the New Game run) at 15 frames a second.
+- Speed: the castle's load holds 24 to 25 frames a second in the window with little to spare; next the GS translator
+  and VIF (the VU1 is recompiled).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).

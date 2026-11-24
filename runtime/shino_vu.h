@@ -6,6 +6,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <immintrin.h>
 
 #define SHINO_VU_INLINE [[gnu::always_inline]] inline
@@ -134,6 +135,49 @@ namespace shino::vu
         }
     }
 
+    // ITOF0/4/12/15 and FTOI0/4/12/15 (n: 0 to 3), ABS: the vector the upper instruction writes to ft; CLIP: the clip
+    // flags it leaves (fs.xyz against ft.w, the previous ones shifted up). Computed before the lower instruction.
+    SHINO_VU_INLINE Vec itof(const Unit &v, uint32_t fs, int n)
+    {
+        static constexpr float scale[4] = {1.0f, 1.0f / 16.0f, 1.0f / 4096.0f, 1.0f / 32768.0f};
+        Vec r;
+        for (int f = 0; f < 4; ++f)
+            r.f[f] = float(static_cast<int32_t>(asU(v.vf[fs].f[f]))) * scale[n];
+        return r;
+    }
+    SHINO_VU_INLINE Vec ftoi(const Unit &v, uint32_t fs, int n)
+    {
+        static constexpr float scale[4] = {1.0f, 16.0f, 4096.0f, 32768.0f};
+        Vec r;
+        for (int f = 0; f < 4; ++f)
+        {
+            const double d = double(v.vf[fs].f[f]) * scale[n];
+            const int32_t x = d >= 2147483647.0 ? INT32_MAX : d <= -2147483648.0 ? INT32_MIN : static_cast<int32_t>(d);
+            r.f[f] = asF(static_cast<uint32_t>(x));
+        }
+        return r;
+    }
+    SHINO_VU_INLINE Vec absv(const Unit &v, uint32_t fs)
+    {
+        Vec r;
+        for (int f = 0; f < 4; ++f)
+            r.f[f] = std::fabs(v.vf[fs].f[f]);
+        return r;
+    }
+    SHINO_VU_INLINE uint32_t clipFlags(const Unit &v, uint32_t fs, uint32_t ft)
+    {
+        const Vec &S = v.vf[fs];
+        const float wv = std::fabs(v.vf[ft].f[3]);
+        uint32_t bits = 0;
+        if (S.f[0] > wv) bits |= 1;
+        if (S.f[0] < -wv) bits |= 2;
+        if (S.f[1] > wv) bits |= 4;
+        if (S.f[1] < -wv) bits |= 8;
+        if (S.f[2] > wv) bits |= 16;
+        if (S.f[2] < -wv) bits |= 32;
+        return ((v.clip << 6) | bits) & 0xFFFFFFu;
+    }
+
     // ---- The lower instructions (as the interpreter's lowerFast does them) --------------------------------------
     SHINO_VU_INLINE uint32_t vi(const Unit &v, uint32_t r) { return v.vi[r & 15u]; }
     SHINO_VU_INLINE void setVi(Unit &v, uint32_t r, uint32_t value)
@@ -211,6 +255,34 @@ namespace shino::vu
     }
     // At each pair's end: its MAC flags into the history FMAND / FMEQ / FMOR read 4 pairs later.
     SHINO_VU_INLINE void macPush(Unit &v) { v.macHistory[v.macAt++ & 3u] = v.mac; }
+
+    // VU1's data memory for the compiled programs (they run on VU1 alone: its own 1024 quadwords, not through `data`).
+    SHINO_VU_INLINE float *mem1(Unit &v, uint32_t qw) { return reinterpret_cast<float *>(v.mem + 16 * (qw & 0x3FFu)); }
+    SHINO_VU_INLINE __m128 load1(Unit &v, uint32_t qw) { return _mm_load_ps(mem1(v, qw)); }
+    SHINO_VU_INLINE void store1(Unit &v, uint32_t qw, uint32_t r, uint32_t dest)
+    {
+        float *m = mem1(v, qw);
+        const __m128 mask = lanes(dest);
+        _mm_store_ps(m, _mm_or_ps(_mm_and_ps(mask, _mm_loadu_ps(v.vf[r].f)), _mm_andnot_ps(mask, _mm_load_ps(m))));
+    }
+    SHINO_VU_INLINE void ilw1(Unit &v, uint32_t it, uint32_t qw, uint32_t dest)
+    {
+        for (int f = 0; f < 4; ++f)
+            if (has(dest, f))
+            {
+                uint32_t x;
+                std::memcpy(&x, mem1(v, qw) + f, 4);
+                setVi(v, it, x);
+                break;
+            }
+    }
+    SHINO_VU_INLINE void isw1(Unit &v, uint32_t it, uint32_t qw, uint32_t dest)
+    {
+        const uint32_t x = vi(v, it);
+        for (int f = 0; f < 4; ++f)
+            if (has(dest, f))
+                std::memcpy(mem1(v, qw) + f, &x, 4);
+    }
 
     // ---- What a compiled program hands to the interpreter (runtime/shino_vu1.cpp), on the unit running ----------
     struct UpperResult
