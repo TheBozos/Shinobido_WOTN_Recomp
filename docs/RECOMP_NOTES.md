@@ -283,6 +283,11 @@ jumps, the second tutorial message, guards that spot the ninja and fight him, hi
 headless (about nine minutes of play) and 14,000 in the window: no fault, no unknown device access, no unanswered
 call. Play holds 25 frames a second, down to 15 to 18 for a while near several guards.
 
+The pause menu's screens open and draw: Check Mission (three pages: the mission's picture and story, then its type,
+destination and requirements), Controls (the pad's diagram), Settings (sound, the BGM / SE / voice volumes, aspect
+ratio, brightness, blood, vibration, camera). Settings offers a 16:9 picture ("16:9 (Widescreen)"): the game renders
+it anamorphic, so the port's 4:3 window would squeeze it; a 16:9 window for that setting is still to do.
+
 To look at with a reference: a light disc under a crouching guard (dust, or a shadow blended the wrong way?), and the
 strong yellow light on some walls.
 
