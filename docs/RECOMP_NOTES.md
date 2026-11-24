@@ -595,6 +595,17 @@ item teleport now turns the ninja toward the item (his world matrix's rows: +0x1
 little short of it, on its floor: one Grab (Triangle) takes it; a second press drops it. "Steal the food and weaken
 the enemy" and "Steal back the jewel" (type 10) are still not done: nothing to take where their item's position is.
 
+Then: "The stone that Akame is hiding" carried out, "Send to the recipient right now?", a story scene (Akame, the
+stone's light), 100% "Invisible" (`build/hideout9.state` at 56400, 4,942 Mon; the rating's last page waits for
+Triangle). Offered: "First, observe Sadama's man" and "Observe Mokuami Fortress" (reconnaissance), "Get the mercenary
+list" again (100%, then a story scene introducing the Mosu ninja clan's Usuba), "Kill Kagekatsu Nikko, the samurai
+general" (Assassination: "Mission Complete!", the Mosu scene). "First, observe Sadama's man" completed by the cheat
+(90%, the Mosu clan's Ageha) leads to `build/hideout10.state` (61120, 5,060 Mon; saved with the Missions submenu
+open): "Now kill them in secret" (Total Destruction: "Mission Complete!", then the Kenobi ninja clan's Hebitonbo),
+"Deliver the Secret Documents" (Transport: complete), "Get those Secret Documents" (Robbery: take them from a target
+who carries them; the teleports do not, "Mission Failed!" and a scene: the game's outcome) and "Collect Grass from
+Fudo Castle" (not done: nothing taken where its item is). Every scene, load and rating ran without a port fault.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
