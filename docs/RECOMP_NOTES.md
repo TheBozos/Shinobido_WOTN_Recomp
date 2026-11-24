@@ -606,6 +606,22 @@ open): "Now kill them in secret" (Total Destruction: "Mission Complete!", then t
 who carries them; the teleports do not, "Mission Failed!" and a scene: the game's outcome) and "Collect Grass from
 Fudo Castle" (not done: nothing taken where its item is). Every scene, load and rating ran without a port fault.
 
+## Playing the story with the cheats (2026-11-24)
+
+`tools/play/shino_cycle.sh <state> <frame> <k> <out state> [done|kill|garden]` plays one day from a Hideout save
+state: back to the Hideout's top menu (Cross, then Triangle three times: a dialog such as the garden raid's
+dismissed), Mission Scroll, Missions, the k-th mission accepted (Start, then Left and Cross for "You have nothing
+equipped"), completed with the `done` cheat (or the kill loop), then Cross and Triangle in turn through the rating,
+the scenes and the prompts ("Send to the recipient right now?") back to the Hideout, where it saves the next state.
+`garden` defends the garden instead (To Garden, Defend, the kill loop): when the Hideout says "I feel the presence
+of enemies in my garden", the mission list cannot be opened until it is done. `tools/play/shino_chain.sh` repeats it
+(k rotating 1 to 4 with k 0), a garden defense after any day that ended nothing; captures in `build/cyc/h<n>/`,
+contact sheets with `tools/play/shino_review.py`.
+From `build/hideout10.state`, days h11 to h36 played this way: every mission completed ("Set a trap with a secret
+document", "Too many barbarians", "Finally, the samurai general's head", "Deliver the Rapid-fire Bow Designs",
+"Defeat Yoshizo Iiyama, Sadame's samurai general", "Attack Sadame's starving troops", merchants and bear hunts...),
+the Kenobi ninja clan's scenes, three garden defenses; 5,060 to 22,791 Mon; no fault.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
