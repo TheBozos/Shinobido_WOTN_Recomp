@@ -12,6 +12,7 @@
 // program after the next pair. Floats are the PC's (no PS2 overflow rules beyond clamping to the largest finite).
 #include "shino_gs.h"
 #include "shino_port.h"
+#include "shino_vu.h"
 #include <array>
 #include <bit>
 #include <cmath>
@@ -19,74 +20,34 @@
 #include <cstdlib>
 #include <cstring>
 #include <immintrin.h>
+#include <algorithm>
 #include <map>
+#include <string>
 #include <vector>
 
 namespace shino
 {
     namespace
     {
-        // ---- The VU1 ----------------------------------------------------------------------------------------------
-        struct Vec
-        {
-            float f[4] = {0, 0, 0, 0}; // x y z w
-        };
-        // A vector unit: VU1 (16 KB data, 16 KB code), or VU0 (4 KB each; its registers are the EE's COP2 state,
-        // copied in and out around a program, and its data memory is the runtime's).
-        struct Vu1
-        {
-            Vu1() { vf[0].f[3] = 1.0f; } // vf0 is the constant (0, 0, 0, 1): writes to it are dropped
-            Vec vf[32];
-            uint16_t vi[16] = {};
-            Vec acc;
-            float q = 0, p = 0, i = 0;
-            uint32_t r = 0x3F800000u;
-            uint32_t clip = 0, status = 0;
-            uint16_t mac = 0;
-            std::array<uint16_t, 4> macHistory{}; // the MAC flags of the last 4 pairs (FMAND's delay)
-            uint32_t macAt = 0;
-            float pendingQ = 0;
-            int qDelay = 0;
-            alignas(16) uint8_t mem[16384] = {};
-            uint32_t micro[4096] = {}; // 2048 pairs: lower at even, upper at odd
-            uint32_t tpc = 0;          // where the last program stopped (MSCNT)
-            uint64_t programs = 0, pairs = 0, kicks = 0, refused = 0;
-            uint8_t *data = mem;       // the data memory (VU0: the runtime's)
-            uint32_t qwMask = 0x3FFu;  // its quadwords
-            uint32_t pcMask = 0x3FF8u; // the code memory's bytes (pairs of 8)
-            bool vu0 = false;
-        } g_vu, g_vu0;
+        // ---- The VU1 (runtime/shino_vu.h: the state and the operations the compiled programs share) ----------------
+        using vu::asF;
+        using vu::asU;
+        using vu::clampF;
+        using vu::g_lanes;
+        using vu::has;
+        using vu::kFloatMax;
+        using vu::s16;
+        using vu::UpperResult;
+        using vu::Vec;
+        using Vu1 = vu::Unit;
+        Vu1 g_vu, g_vu0;
         Vu1 *g_cur = &g_vu; // the unit a program runs on
 
         uint32_t g_programStart = 0;
         bool g_traceThis = false; // SHINO_TRACE_PROGRAM=<flip>:<n>: one program instance stepped pair by pair
-        constexpr float kFloatMax = 3.40282347e38f;
-        float clampF(float v)
-        {
-            if (std::isnan(v))
-                return 0.0f;
-            if (v > kFloatMax)
-                return kFloatMax;
-            if (v < -kFloatMax)
-                return -kFloatMax;
-            return v;
-        }
-        Vec &memVec(uint32_t qw) { return *reinterpret_cast<Vec *>(g_cur->data + 16 * (qw & g_cur->qwMask)); }
-        uint32_t &memWord(uint32_t qw, int field) { return reinterpret_cast<uint32_t *>(g_cur->data + 16 * (qw & g_cur->qwMask))[field]; }
-        float asF(uint32_t v) { return std::bit_cast<float>(v); }
-        uint32_t asU(float v) { return std::bit_cast<uint32_t>(v); }
-        int16_t s16(uint32_t v) { return static_cast<int16_t>(v); }
-
-        // dest bits: x = 8, y = 4, z = 2, w = 1 (instruction bits 24..21)
-        bool has(uint32_t dest, int field) { return (dest >> (3 - field)) & 1u; }
-
-        struct UpperResult
-        {
-            bool writes = false, toAcc = false, setsMac = false, clip = false;
-            uint32_t reg = 0, dest = 0;
-            Vec value;
-            uint32_t clipValue = 0;
-        };
+        bool g_noKick = false;    // SHINO_VU_VERIFY: the interpreter's run of a program already run compiled
+        Vec &memVec(uint32_t qw) { return vu::memVec(*g_cur, qw); }
+        uint32_t &memWord(uint32_t qw, int field) { return vu::memWord(*g_cur, qw, field); }
 
         void upper(uint32_t w, UpperResult &out)
         {
@@ -431,72 +392,9 @@ namespace shino
             return d;
         }
 
-        // The lanes a dest field writes (x in lane 0), as masks; and 4 bits reversed (lane order to the MAC's x = bit 3).
-        struct LaneMasks
-        {
-            __m128 m[16];
-            uint8_t rev[16];
-            LaneMasks()
-            {
-                for (uint32_t dest = 0; dest < 16; ++dest)
-                {
-                    alignas(16) uint32_t w[4];
-                    for (int f = 0; f < 4; ++f)
-                        w[f] = has(dest, f) ? 0xFFFFFFFFu : 0u;
-                    m[dest] = _mm_load_ps(reinterpret_cast<const float *>(w));
-                    rev[dest] = static_cast<uint8_t>(((dest & 1u) << 3) | ((dest & 2u) << 1) | ((dest & 4u) >> 1) | ((dest & 8u) >> 3));
-                }
-            }
-        } const g_lanes;
-
         // The arithmetic's result from the registers before the pair's lower instruction.
-        inline __m128 upperArith(const Decoded &d)
-        {
-            const Vu1 &v = *g_cur;
-            const __m128 a = _mm_loadu_ps(v.vf[d.fs].f);
-            __m128 b;
-            switch (d.operand)
-            {
-            case 0: b = _mm_loadu_ps(v.vf[d.ft].f); break;
-            case 1: b = _mm_set1_ps(v.vf[d.ft].f[d.bc]); break;
-            case 2: b = _mm_set1_ps(v.q); break;
-            default: b = _mm_set1_ps(v.i); break;
-            }
-            __m128 r;
-            switch (d.fn)
-            {
-            case 0: r = _mm_add_ps(a, b); break;
-            case 1: r = _mm_sub_ps(a, b); break;
-            case 2: r = _mm_add_ps(_mm_loadu_ps(v.acc.f), _mm_mul_ps(a, b)); break;
-            case 3: r = _mm_sub_ps(_mm_loadu_ps(v.acc.f), _mm_mul_ps(a, b)); break;
-            case 4: r = _mm_mul_ps(a, b); break;
-            case 5: r = _mm_max_ps(b, a); break; // std::max(a, b): a < b ? b : a
-            default: r = _mm_min_ps(b, a); break; // std::min(a, b): b < a ? b : a
-            }
-            // clampF: NaN 0, then the largest finite either way
-            r = _mm_and_ps(r, _mm_cmpord_ps(r, r));
-            r = _mm_min_ps(r, _mm_set1_ps(kFloatMax));
-            return _mm_max_ps(r, _mm_set1_ps(-kFloatMax));
-        }
-
-        inline void commitArith(const Decoded &d, __m128 r)
-        {
-            Vu1 &v = *g_cur;
-            if (!d.toAcc && d.fd == 0)
-                return; // vf0: no write, no flags
-            float *dst = d.toAcc ? v.acc.f : v.vf[d.fd].f;
-            const __m128 mask = g_lanes.m[d.dest];
-            _mm_storeu_ps(dst, _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, _mm_loadu_ps(dst))));
-            if (d.setsMac)
-            {
-                const uint32_t lanes = static_cast<uint32_t>(_mm_movemask_ps(mask));
-                const uint32_t zero = static_cast<uint32_t>(_mm_movemask_ps(_mm_cmpeq_ps(r, _mm_setzero_ps()))) & lanes;
-                const uint32_t sign = static_cast<uint32_t>(_mm_movemask_ps(r)) & lanes;
-                const uint16_t mac = static_cast<uint16_t>(g_lanes.rev[zero] | (g_lanes.rev[sign] << 4));
-                v.mac = mac;
-                v.status = (v.status & ~3u) | ((mac & 0xF) ? 1u : 0u) | ((mac & 0xF0) ? 2u : 0u);
-            }
-        }
+        inline __m128 upperArith(const Decoded &d) { return vu::arith(*g_cur, d.fn, d.operand, d.fs, d.ft, d.bc); }
+        inline void commitArith(const Decoded &d, __m128 r) { vu::commitArith(*g_cur, d.toAcc, d.fd, d.dest, d.setsMac, r); }
 
         float efuField(const Vec &s, uint32_t w) { return s.f[(w >> 21) & 3u]; }
 
@@ -588,7 +486,7 @@ namespace shino
                             std::printf("  %03x: %08x %08x %08x %08x\n", (vi(is) + q) & 0x3FFu, m[0], m[1], m[2], m[3]);
                         }
                     }
-                    if (!v.vu0)
+                    if (!v.vu0 && !g_noKick)
                         gs::path1(v.mem, vi(is));
                     return -1;
                 case 0x70: { const Vec &s = v.vf[is]; v.p = s.f[0] * s.f[0] + s.f[1] * s.f[1] + s.f[2] * s.f[2]; return -1; } // ESADD
@@ -751,45 +649,162 @@ namespace shino
             uint32_t code = 0;          // the command whose data is being gathered
             std::vector<uint8_t> data;  // its data so far
             uint32_t need = 0;          // bytes it needs
+            const uint8_t *from = nullptr; // where its data started (SHINO_VU_SURVEY)
             std::array<uint64_t, 128> counts{}; // by command (UNPACK all at 0x60)
         } g_vif, g_vif0;
         Vif *g_cv = &g_vif; // the VIF whose codes are being read
 
-        void runProgram(uint32_t pcBytes)
+        // SHINO_VU_SURVEY=1: the MPG uploads (micro address, pairs, EE source; how many, how many changed the code) and
+        // the programs run (start, code version: their runs and pairs), printed with the report.
+        bool survey() { static const bool on = std::getenv("SHINO_VU_SURVEY") != nullptr; return on; }
+        std::map<std::array<uint32_t, 3>, std::array<uint64_t, 2>> g_mpgs;
+        std::array<uint32_t, 32> g_regionSrc{}; // the EE address each 64 pairs of code came from
+        std::map<std::pair<uint32_t, std::array<uint32_t, 32>>, std::array<uint64_t, 2>> g_starts;
+        uint64_t g_microVersion = 0;
+
+        int g_inFlip = 0; // the program's index in its flip (SHINO_TRACE_PROGRAM's <n>)
+        uint32_t interpret(uint32_t pc, bool rejoin = false);
+        uint64_t g_interpreted = 0; // pairs the interpreter ran (SHINO_VU_REPORT: of the compiled programs)
+
+        // ---- The compiled programs (runtime/shino_vu.h; tools/shino_vu1_recomp.py) ----------------------------------
+        // A VU1 program runs compiled from the image whose code is what is loaded at its pc, image to image as it goes
+        // where another's code is loaded, and in the interpreter from a pair no image compiled as an entry.
+        // SHINO_VU_INTERP=1: the interpreter alone. SHINO_VU_VERIFY=1: each program run both ways, compared.
+        bool compiledOn()
         {
-            Vu1 &v = *g_cur;
-            prof::Scope timed(v.vu0 ? prof::Vu0 : prof::Vu1);
-            g_programStart = pcBytes;
+            static const bool on = vu::kImageCount > 0 && !std::getenv("SHINO_VU_INTERP") && !std::getenv("SHINO_VU_SCALAR");
+            return on;
+        }
+        struct CompiledStats
+        {
+            uint64_t ended = 0, handed = 0, noImage = 0, mismatches = 0, verified = 0;
+            std::map<uint32_t, uint64_t> handedAt, noImageAt; // by pc
+        } g_compiled;
+        std::array<int, 2048> g_lastImage = [] { std::array<int, 2048> a; a.fill(-1); return a; }();
+        std::vector<std::vector<uint32_t>> g_candidates; // by pair: the images that hold it
+
+        // The image whose code is loaded at pc's segment (its pair first), the last one found there first.
+        int findImage(uint32_t pc)
+        {
+            const uint32_t pair = (pc >> 3) & 2047u, segment = pair / vu::kSegmentPairs;
+            int &last = g_lastImage[pair];
+            if (last >= 0 && vu::segmentOk(static_cast<uint32_t>(last), segment))
+                return last;
+            if (g_candidates.empty())
             {
-                static int count = -1;
-                static uint64_t at = ~0ull;
-                static int which = -1;
-                if (const char *tp = std::getenv("SHINO_TRACE_PROGRAM"); tp && which < 0)
-                {
-                    at = std::strtoull(tp, nullptr, 10);
-                    const char *c = std::strchr(tp, ':');
-                    which = c ? std::atoi(c + 1) : 0;
-                }
-                if (!v.vu0 && gs::flips() == at)
-                    ++count;
-                g_traceThis = !v.vu0 && gs::flips() == at && count == which;
+                g_candidates.resize(2048);
+                for (uint32_t id = 0; id < vu::kImageCount; ++id)
+                    for (uint32_t k = 0; k < vu::kImages[id].count; ++k)
+                        g_candidates[vu::kImages[id].start + k].push_back(id);
             }
-            ++v.programs;
-            static uint64_t flipSeen = ~0ull;
-            static int inFlip = 0; // this program's index in its flip (SHINO_TRACE_PROGRAM's <n>)
-            if (!v.vu0)
+            for (const uint32_t id : g_candidates[pair])
             {
-                if (gs::flips() != flipSeen)
+                const vu::Image &im = vu::kImages[id];
+                const uint32_t k = pair - im.start;
+                if (im.code[2 * k] != g_vu.micro[2 * pair] || im.code[2 * k + 1] != g_vu.micro[2 * pair + 1])
+                    continue;
+                if (vu::segmentOk(id, segment))
                 {
-                    flipSeen = gs::flips();
-                    inFlip = 0;
+                    last = static_cast<int>(id);
+                    return last;
+                }
+            }
+            return -1;
+        }
+
+        void compiledFrom(uint32_t pc)
+        {
+            Vu1 &v = g_vu;
+            for (int hops = 0; hops < 1 << 20; ++hops)
+            {
+                const int image = findImage(pc);
+                uint32_t r;
+                if (image < 0)
+                {
+                    ++g_compiled.noImage;
+                    ++g_compiled.noImageAt[pc];
+                    r = interpret(pc, true);
                 }
                 else
-                    ++inFlip;
+                {
+                    r = vu::kImages[image].run(v, pc);
+                    if (r != vu::kEnd && (r & vu::kInterpret))
+                    {
+                        ++g_compiled.handed;
+                        ++g_compiled.handedAt[r & v.pcMask];
+                        r = interpret(r & v.pcMask, true);
+                    }
+                }
+                if (r == vu::kEnd)
+                {
+                    ++g_compiled.ended;
+                    return;
+                }
+                pc = r & v.pcMask;
             }
-            // TOP: the buffer the program reads; the next uses the other (BASE, BASE + OFFSET).
-            v.vi[0] = 0;
-            uint32_t pc = pcBytes & v.pcMask;
+            std::printf("[shino:vu1] compiled program at %x did not end\n", g_programStart);
+        }
+
+        // The compiled run and the interpreter's from the same state: what they leave compared (the interpreter's kept).
+        void verifyRun(uint32_t pc)
+        {
+            static Vu1 before, compiled;
+            before = g_vu;
+            compiledFrom(pc);
+            compiled = g_vu;
+            g_vu = before;
+            g_noKick = true;
+            interpret(pc);
+            g_noKick = false;
+            ++g_compiled.verified;
+            const Vu1 &a = compiled, &b = g_vu;
+            std::string diff;
+            auto check = [&](const char *name, const void *x, const void *y, size_t n) {
+                if (std::memcmp(x, y, n) != 0)
+                    diff += std::string(" ") + name;
+            };
+            for (int r = 0; r < 32; ++r)
+                if (std::memcmp(a.vf[r].f, b.vf[r].f, 16) != 0)
+                    diff += " vf" + std::to_string(r);
+            check("vi", a.vi, b.vi, sizeof(a.vi));
+            check("acc", a.acc.f, b.acc.f, 16);
+            check("q", &a.q, &b.q, 4);
+            check("p", &a.p, &b.p, 4);
+            check("i", &a.i, &b.i, 4);
+            check("r", &a.r, &b.r, 4);
+            check("clip", &a.clip, &b.clip, 4);
+            check("status", &a.status, &b.status, 4);
+            check("mac", &a.mac, &b.mac, 2);
+            check("pendingQ", &a.pendingQ, &b.pendingQ, 4);
+            check("qDelay", &a.qDelay, &b.qDelay, 4);
+            check("tpc", &a.tpc, &b.tpc, 4);
+            check("kicks", &a.kicks, &b.kicks, 8);
+            check("mem", a.mem, b.mem, sizeof(a.mem));
+            for (uint32_t k = 0; k < 4; ++k) // the history's last 4, oldest first
+                if (a.macHistory[(a.macAt + k) & 3u] != b.macHistory[(b.macAt + k) & 3u])
+                {
+                    diff += " macHistory";
+                    break;
+                }
+            if (!diff.empty() && g_compiled.mismatches++ < 40)
+                std::printf("[shino:verify] program %x (flip %llu, #%d):%s\n", g_programStart, (unsigned long long)gs::flips(),
+                            g_inFlip, diff.c_str());
+        }
+
+        void runCompiled(uint32_t pc)
+        {
+            static const bool verify = std::getenv("SHINO_VU_VERIFY") != nullptr;
+            if (verify)
+                verifyRun(pc);
+            else
+                compiledFrom(pc);
+        }
+
+        // The interpreter: the program on the unit g_cur from the pair at pc (bytes) to its end (kEnd), or with `rejoin`
+        // to the next pair a compiled image holds (its pc).
+        uint32_t interpret(uint32_t pc, bool rejoin)
+        {
+            Vu1 &v = *g_cur;
             auto &decoded = v.vu0 ? g_decoded0 : g_decoded;
             int64_t branch = -1;
             bool ending = false;
@@ -845,7 +860,7 @@ namespace shino
                 if (ending)
                 {
                     v.tpc = pc + 8;
-                    return;
+                    return vu::kEnd;
                 }
                 if (branch >= 0)
                 {
@@ -858,13 +873,73 @@ namespace shino
                     branch = to;
                 if (endBit)
                     ending = true;
+                ++g_interpreted;
+                // Back to the compiled code at the next pair it can take (nothing pending: no branch, no end).
+                if (rejoin && branch < 0 && !ending && findImage(pc) >= 0)
+                    return pc;
             }
-            std::printf("[shino:%s] program at %x did not end (flip %llu, program %d of it)\n", v.vu0 ? "vu0" : "vu1", pcBytes,
-                        (unsigned long long)gs::flips(), v.vu0 ? -1 : inFlip);
+            std::printf("[shino:%s] program at %x did not end (flip %llu, program %d of it)\n", v.vu0 ? "vu0" : "vu1",
+                        g_programStart, (unsigned long long)gs::flips(), v.vu0 ? -1 : g_inFlip);
+            return vu::kEnd;
+        }
+
+
+        void runProgram(uint32_t pcBytes)
+        {
+            Vu1 &v = *g_cur;
+            prof::Scope timed(v.vu0 ? prof::Vu0 : prof::Vu1);
+            g_programStart = pcBytes;
+            {
+                static int count = -1;
+                static uint64_t at = ~0ull;
+                static int which = -1;
+                if (const char *tp = std::getenv("SHINO_TRACE_PROGRAM"); tp && which < 0)
+                {
+                    at = std::strtoull(tp, nullptr, 10);
+                    const char *c = std::strchr(tp, ':');
+                    which = c ? std::atoi(c + 1) : 0;
+                }
+                if (!v.vu0 && gs::flips() == at)
+                    ++count;
+                g_traceThis = !v.vu0 && gs::flips() == at && count == which;
+            }
+            ++v.programs;
+            static uint64_t flipSeen = ~0ull;
+            if (!v.vu0)
+            {
+                if (gs::flips() != flipSeen)
+                {
+                    flipSeen = gs::flips();
+                    g_inFlip = 0;
+                }
+                else
+                    ++g_inFlip;
+            }
+            // TOP: the buffer the program reads; the next uses the other (BASE, BASE + OFFSET).
+            v.vi[0] = 0;
+            const uint32_t pc = pcBytes & v.pcMask;
+            if (!v.vu0 && !g_traceThis && compiledOn())
+                runCompiled(pc);
+            else
+                interpret(pc);
         }
 
         void startProgram(uint32_t pcBytes)
         {
+            if (survey() && !g_cur->vu0)
+            {
+                const uint64_t before = g_vu.pairs;
+                auto &e = g_starts[{pcBytes, g_regionSrc}];
+                Vif &f = *g_cv;
+                f.top = f.tops;
+                f.itop = f.itops;
+                f.dbf = !f.dbf;
+                f.tops = f.base + (f.dbf ? f.offset : 0);
+                runProgram(pcBytes);
+                ++e[0];
+                e[1] += g_vu.pairs - before;
+                return;
+            }
             if (static const char *d = std::getenv("SHINO_DUMP_MICRO"); d && gs::flips() == static_cast<uint64_t>(std::atoll(d)))
             {
                 static int n = 0, seen = -1;
@@ -1028,8 +1103,26 @@ namespace shino
             {
                 uint32_t num = (code >> 16) & 0xFFu;
                 if (!num) num = 256;
+                if (survey() && !g_cur->vu0)
+                {
+                    const bool changed = std::memcmp(&g_cur->micro[(imm & 0x7FFu) * 2], data, std::min(num, 2048u - (imm & 0x7FFu)) * 8) != 0;
+                    const uint8_t *from = data == g_cv->data.data() ? g_cv->from : data;
+                    const uint32_t src = vif::eeRam && from >= vif::eeRam && from < vif::eeRam + 0x2000000 ? uint32_t(from - vif::eeRam) : 0xFFFFFFFFu;
+                    for (uint32_t k = 0; k < num; k += 0x40)
+                        g_regionSrc[((imm + k) >> 6) & 31u] = src + 8 * k;
+                    auto &e = g_mpgs[{imm, num, src}];
+                    ++e[0];
+                    e[1] += changed;
+                    g_microVersion += changed;
+                }
                 for (uint32_t k = 0; k < num; ++k)
-                    std::memcpy(&g_cur->micro[((imm + k) & (g_cur->pcMask >> 3)) * 2], data + 8 * k, 8);
+                {
+                    const uint32_t pair = (imm + k) & (g_cur->pcMask >> 3);
+                    uint32_t *to = &g_cur->micro[pair * 2];
+                    if (!g_cur->vu0 && std::memcmp(to, data + 8 * k, 8) != 0)
+                        ++vu::g_segmentVersion[pair / vu::kSegmentPairs]; // the compiled code there to be checked again
+                    std::memcpy(to, data + 8 * k, 8);
+                }
                 break;
             }
             case 0x50: case 0x51: // DIRECT, DIRECTHL (VIF1 only)
@@ -1060,6 +1153,34 @@ namespace shino
             }
         }
     } // namespace
+
+    // ---- What the compiled programs share with the interpreter (runtime/shino_vu.h) -----------------------------
+    namespace vu
+    {
+        const LaneMasks g_lanes;
+        uint32_t g_segmentVersion[kSegments] = {};
+        SegmentCheck *g_segmentChecks = new SegmentCheck[kImageCount * kSegments];
+        bool recheckSegment(uint32_t image, uint32_t segment)
+        {
+            const Image &im = kImages[image];
+            const uint32_t lo = std::max(segment * kSegmentPairs, im.start);
+            const uint32_t hi = std::min((segment + 1) * kSegmentPairs, im.start + im.count);
+            const bool ok = lo < hi && std::memcmp(&g_vu.micro[lo * 2], &im.code[(lo - im.start) * 2], (hi - lo) * 8) == 0;
+            SegmentCheck &c = g_segmentChecks[image * kSegments + segment];
+            c.version = g_segmentVersion[segment];
+            c.ok = ok;
+            return ok;
+        }
+        void upperSlow(uint32_t up, UpperResult &out) { upper(up, out); }
+        void commitSlow(const UpperResult &u) { commitUpper(u); }
+        void lowerSlow(uint32_t lo, uint32_t pc)
+        {
+            bool loi = false;
+            lower(lo, pc, loi);
+        }
+        uint32_t top() { return g_cv->top; }
+        uint32_t itop() { return g_cv->itop; }
+    } // namespace vu
 
     void vif::codes(const uint8_t *data, uint32_t bytes, bool)
     {
@@ -1098,6 +1219,7 @@ namespace shino
                             f.offset, f.mode);
             f.code = code;
             f.need = dataBytes(code);
+            f.from = data + at;
             // MPG's and DIRECT's data start on the next 64-bit / 128-bit boundary of the stream: their alignment
             // padding (VIF NOPs) is already in the stream as codes, so nothing to skip here.
             if (!f.need)
@@ -1206,5 +1328,28 @@ namespace shino
                     (unsigned long long)g_vu.pairs, (unsigned long long)g_vu.kicks, (unsigned long long)g_vu.refused);
         std::printf("[shino:vu0] programs=%llu pairs=%llu refused=%llu\n", (unsigned long long)g_vu0.programs,
                     (unsigned long long)g_vu0.pairs, (unsigned long long)g_vu0.refused);
+        std::printf("[shino:vu1] compiled: %u images; programs %llu, handed to the interpreter %llu times, no image %llu; "
+                    "pairs interpreted %llu of %llu",
+                    vu::kImageCount, (unsigned long long)g_compiled.ended, (unsigned long long)g_compiled.handed,
+                    (unsigned long long)g_compiled.noImage, (unsigned long long)g_interpreted, (unsigned long long)g_vu.pairs);
+        if (g_compiled.verified)
+            std::printf("; verified %llu, %llu differed", (unsigned long long)g_compiled.verified,
+                        (unsigned long long)g_compiled.mismatches);
+        std::printf("\n");
+        for (const auto &[pc, n] : g_compiled.handedAt)
+            std::printf("[shino:vu1]   handed at %04x: %llu\n", pc, (unsigned long long)n);
+        for (const auto &[pc, n] : g_compiled.noImageAt)
+            std::printf("[shino:vu1]   no image at %04x: %llu\n", pc, (unsigned long long)n);
+        for (const auto &[k, e] : g_mpgs)
+            std::printf("[shino:survey] mpg at %03x pairs %3u from %08x: %llu times, %llu changed\n", k[0], k[1], k[2],
+                        (unsigned long long)e[0], (unsigned long long)e[1]);
+        for (const auto &[k, e] : g_starts)
+        {
+            std::printf("[shino:survey] program %04x: %llu runs, %llu pairs; code from", k.first, (unsigned long long)e[0],
+                        (unsigned long long)e[1]);
+            for (uint32_t r = 0; r < 32; ++r)
+                std::printf(" %x", k.second[r]);
+            std::printf("\n");
+        }
     }
 } // namespace shino

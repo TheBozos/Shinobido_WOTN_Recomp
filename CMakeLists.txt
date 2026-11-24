@@ -86,6 +86,21 @@ target_link_libraries(shino_game PUBLIC bozo_runtime_headers)
 target_include_directories(shino_game PUBLIC ${shino_gen})
 target_compile_options(shino_game PRIVATE -O1 -w -ffp-contract=off)
 
+# The VU1 microprograms, recompiled from the microcode packets of the player's executable (tools/shino_vu1_recomp.py,
+# runtime/shino_vu.h): the interpreter in runtime/shino_vu1.cpp runs what they do not cover.
+set(shino_vu1_gen ${CMAKE_BINARY_DIR}/shino_vu1_gen)
+set(shino_vu1_sources ${shino_vu1_gen}/shino_vu1_table.cpp)
+foreach(i RANGE 7)
+  list(APPEND shino_vu1_sources ${shino_vu1_gen}/shino_vu1_0${i}.cpp)
+endforeach()
+add_custom_command(OUTPUT ${shino_vu1_sources}
+  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/shino_vu1_recomp.py ${shino_elf} ${shino_vu1_gen} --files 8
+  DEPENDS ${shino_elf} ${CMAKE_SOURCE_DIR}/tools/shino_vu1_recomp.py
+  COMMENT "Recompiling the VU1 microprograms")
+add_library(shino_vu1_code STATIC ${shino_vu1_sources})
+target_include_directories(shino_vu1_code PRIVATE ${CMAKE_SOURCE_DIR}/runtime)
+target_compile_options(shino_vu1_code PRIVATE -O2 -w -ffp-contract=off)
+
 # The IOP sound modules, statically compiled from the player's disc (tools/shino_bozo_audio.py, docs/native-irx.md in
 # BozoEngine): Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE.
 set(shino_audio_gen ${CMAKE_BINARY_DIR}/shino_audio_gen)
@@ -113,7 +128,7 @@ set(shino_runtime_sources ${shino_port_sources} $<TARGET_OBJECTS:shino_audio_cod
 list(FILTER shino_runtime_sources EXCLUDE REGEX "shino_main\\.cpp$")
 
 add_executable(shino-headless runtime/shino_main.cpp ${shino_runtime_sources})
-target_link_libraries(shino-headless PRIVATE shino_game bozo_host)
+target_link_libraries(shino-headless PRIVATE shino_game shino_vu1_code bozo_host)
 target_include_directories(shino-headless PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${shino_audio_gen})
 add_dependencies(shino-headless shino_native_audio)
 target_compile_definitions(shino-headless PRIVATE SHINO_DEFAULT_ELF="${shino_image}" SHINO_DEFAULT_ISO="${SHINO_ISO}"
@@ -125,7 +140,7 @@ endif()
 # The game in a window (SDL3, OpenGL 3.3): the same port, the PC's pads and sound.
 if(SHINO_WINDOW)
   add_executable(shinobido runtime/shino_main.cpp ${shino_runtime_sources})
-  target_link_libraries(shinobido PRIVATE shino_game bozo_host bozo_app)
+  target_link_libraries(shinobido PRIVATE shino_game shino_vu1_code bozo_host bozo_app)
   target_include_directories(shinobido PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${shino_audio_gen})
   add_dependencies(shinobido shino_native_audio)
   target_compile_definitions(shinobido PRIVATE SHINO_WITH_WINDOW SHINO_DEFAULT_ELF="${shino_image}"

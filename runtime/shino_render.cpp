@@ -164,6 +164,7 @@ namespace shino
         void scheduler(uint8_t *rdram, R5900Context *ctx, Runtime *rt)
         {
             g_ram = rdram;
+            vif::eeRam = rdram;
             const int32_t why = static_cast<int32_t>(ctx->r[4].uw[0]);
             const uint32_t caller = ctx->r[31].uw[0];
             if ((why == 1 || why == 2) && rd8(kBusy))
@@ -245,6 +246,7 @@ namespace shino
         void vblank(uint8_t *rdram, R5900Context *ctx, Runtime *rt)
         {
             g_ram = rdram;
+            vif::eeRam = rdram;
             const uint32_t caller = ctx->r[31].uw[0];
             ctx->r[2].ud[0] = 0;
             const uint8_t count = rd8(kVblanks), minimum = rd8(kVblanksPerFrame);
@@ -315,6 +317,7 @@ namespace shino
         void movieSwap(uint8_t *rdram, R5900Context *ctx, Runtime *rt)
         {
             g_ram = rdram;
+            vif::eeRam = rdram;
             const uint32_t caller = ctx->r[31].uw[0];
             // libgraph's swap puts the buffer's display and draw environments: nothing natively (the picture is the
             // movie's, published below); it returns 0.
@@ -363,6 +366,7 @@ namespace shino
         void loadVu0(uint8_t *rdram, R5900Context *ctx, Runtime *rt)
         {
             g_ram = rdram;
+            vif::eeRam = rdram;
             const uint32_t chain = ctx->r[4].uw[0];
             constexpr uint32_t kLoaded = 0x523228u;
             if (rd32(kLoaded) == chain)
@@ -383,6 +387,7 @@ namespace shino
     void vif0Chain(uint8_t *rdram, Runtime *rt, uint32_t tadr)
     {
         g_ram = rdram;
+        vif::eeRam = rdram;
         walkChain(tadr, true, [rt](const uint8_t *p, uint32_t n, bool) { vif::codes0(rt, p, n); });
     }
 

@@ -72,6 +72,8 @@ namespace shino
         // VU1 instruction pairs and programs run so far (the profile's rates).
         uint64_t vu1Pairs();
         uint64_t vu1Programs();
+        // The EE's RAM (set by the render scheduler's overrides): where VIF data comes from, for the VU1 survey.
+        inline const uint8_t *eeRam = nullptr;
     }
     // VU0 microprograms (runtime/shino_vu1.cpp's interpreter): the program at pcBytes of the code VIF0 loaded, on the
     // EE's COP2 registers and the runtime's VU0 data memory (VCALLMS).
