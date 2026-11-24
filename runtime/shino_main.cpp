@@ -160,7 +160,7 @@ int main(int argc, char **argv)
                     break;
                 p = *next ? next + 1 : next;
             }
-        // SHINO_TRACE_PLAYER=<every>: the player's object (the pointer at gp-0x6a0c, 0x625d64), its first 8 KB, every n
+        // SHINO_TRACE_PLAYER=<every>[:<address>]: the player's object (or the one at that address) (the pointer at gp-0x6a0c, 0x625d64), its first 8 KB, every n
         // frames into build/player_trace.bin (frame, then the bytes): the search for its fields.
         if (static const char *every = std::getenv("SHINO_TRACE_PLAYER"); every && f % std::max(1ull, std::strtoull(every, nullptr, 10)) == 0)
         {
@@ -168,6 +168,8 @@ int main(int argc, char **argv)
             const uint8_t *ram = d.runtime().memory.ram();
             uint32_t object;
             std::memcpy(&object, ram + 0x625d64u, 4);
+            if (const char *colon = std::strchr(every, ':')) // <every>:<address>: that object instead (a guard's)
+                object = static_cast<uint32_t>(std::strtoul(colon + 1, nullptr, 16));
             if (trace && object)
             {
                 const uint64_t frame = f;

@@ -1,6 +1,6 @@
 // Shinobido's cheats: toggles and teleports the player sets in the window's Cheats tab (F2, runtime/app/
 // shino_cheats_ui.cpp) or, for runs without a window, from the environment (SHINO_CHEAT_HEALTH=1,
-// SHINO_TELEPORT=<x>,<y>,<z>). Applied on the game's thread at each frame's end (runtime/shino_main.cpp).
+// SHINO_CHEAT_KILLS=1, SHINO_TELEPORT=<x>,<y>,<z>). Applied on the game's thread at each frame's end (runtime/shino_main.cpp).
 #pragma once
 
 #include <cstdint>
@@ -11,6 +11,7 @@ namespace shino::cheats
     enum class Cheat
     {
         InfiniteHealth, // Goh's health kept at its maximum
+        OneHitKills,    // every other character's health kept at 1: the next hit kills (the game's own death)
     };
     bool enabled(Cheat cheat);
     void setEnabled(Cheat cheat, bool on);
@@ -22,6 +23,7 @@ namespace shino::cheats
         float x = 0, y = 0, z = 0;    // world position (y up; the ground of the castle grounds is about 0)
         float fx = 0, fz = 1;         // the way he faces, on the ground
         int32_t health = 0, maxHealth = 0;
+        int enemies = 0, enemiesAlive = 0; // the other characters of the mission (the character table's)
     };
     Player player();
 

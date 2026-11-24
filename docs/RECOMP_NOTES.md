@@ -435,9 +435,18 @@ play (`SHINO_DUMP_RAM_AT=<frame>,...` writes the RAM at those frames to `build/r
   pointer at `gp-0x6d44` gives (its translation also at `0x679c70`); `0x521ba0`, 100 units ahead of it, is not him.
 - **His health**: +0x64c, an int, out of +0x650 (100 in the first mission): the one field of his object that only went
   down, 100 to 5, through the scripted fights (from frame 9350).
+- **The characters**: a table the pointer at `gp-0x6d38` (`0x625a38`) gives: 16-byte entries from +0x20, the
+  character's object at +4 (the player first, then the guards: 11 in the first mission). Found from the draw list's
+  records (the object pointer 16 bytes before each model's position) and the heap block that held them all in order.
+  A guard's object has the player's layout (itself at +0, its world matrix at +0x10) and the same status block, which
+  starts with the object's address again: at +0x630 for the player, +0x620 for a guard; health at +0x1c in it, out of
+  +0x20 (a guard's 24, the player's 100). The guard the script fights went 24 to 19 under one hit.
+- **One-hit kills** (`SHINO_CHEAT_KILLS=1`): every other character's health above 1 is set to 1 each frame, so the next
+  hit takes it below 0 and the game's own death follows (the dead, at 0 or below, are left alone).
 Checked headless: `SHINO_TELEPORT=60,0,250` from the save state puts him there and he walks on; with
-`SHINO_CHEAT_HEALTH=1` his health stays 100 through the fights that took it to 5. The tab is drawn only in the window
-(not looked at yet).
+`SHINO_CHEAT_HEALTH=1` his health stays 100 through the fights that took it to 5; with `SHINO_CHEAT_KILLS=1` the
+guard the script fights goes from 1 to -4 at the hit that took him to 19, and never moves again. The tab is drawn
+only in the window (not looked at yet).
 
 ## Next
 

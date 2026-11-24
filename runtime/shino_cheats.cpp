@@ -7,6 +7,10 @@
 //   there, the game moves him on from it (a copy at +0x140 and the draw's are the last frame's). The z row (+0x30) is
 //   the way he faces.
 // - His health: +0x64c (an int), out of +0x650 (100 in the first mission).
+// - The characters: a table the pointer at gp-0x6d38 (0x625a38) gives, 16-byte entries from +0x20, the object at +4
+//   (the player first, then the guards). Each character's object has the same layout as the player's and a status
+//   block that starts with its own address again (the player's at +0x630, a guard's at +0x620): health at +0x1c out of
+//   +0x20 (24 for the first mission's guards).
 #include "shino_cheats.h"
 
 #include <atomic>
@@ -29,7 +33,9 @@ namespace shino::cheats
             return e && *e && *e != '0';
         }
 
-        std::atomic<bool> g_on[1] = {fromEnvironment("SHINO_CHEAT_HEALTH")};
+        std::atomic<bool> g_on[2] = {fromEnvironment("SHINO_CHEAT_HEALTH"), fromEnvironment("SHINO_CHEAT_KILLS")};
+        constexpr uint32_t kCharacterTable = 0x625a38; // gp-0x6d38
+        constexpr uint32_t kMaxCharacters = 128;
 
         // The teleport asked for (by the tab or SHINO_TELEPORT), made at the next frame the player is in play.
         enum class Kind { None, To, By };
@@ -78,6 +84,36 @@ namespace shino::cheats
                 if (!std::isfinite(readF(ram, object + kPosition + 4 * k)))
                     return 0;
             return object;
+        }
+
+        // A character object's status block (it starts with the object's address again): its offset, 0 when none.
+        uint32_t statusBlock(const uint8_t *ram, uint32_t object)
+        {
+            for (uint32_t at = 0x600; at < 0x700; at += 4)
+                if (read32(ram, object + at) == object)
+                {
+                    const int32_t health = static_cast<int32_t>(read32(ram, object + at + 0x1c));
+                    const int32_t max = static_cast<int32_t>(read32(ram, object + at + 0x20));
+                    if (max > 0 && max <= 100000 && health >= 0 && health <= max)
+                        return at;
+                }
+            return 0;
+        }
+
+        // Every character but the player, through the character table: f(object, its health's address).
+        template <class F> void forEachEnemy(const uint8_t *ram, uint32_t player, F &&f)
+        {
+            const uint32_t table = read32(ram, kCharacterTable);
+            if (table < 0x100000u || table >= 0x2000000u - kMaxCharacters * 16u)
+                return;
+            for (uint32_t i = 0; i < kMaxCharacters; ++i)
+            {
+                const uint32_t object = read32(ram, table + 0x20 + 16 * i + 4);
+                if (object == player || object < 0x100000u || object >= 0x2000000u - 0x1000u || read32(ram, object) != object)
+                    continue;
+                if (const uint32_t block = statusBlock(ram, object))
+                    f(object, object + block + 0x1c);
+            }
         }
 
         // SHINO_TELEPORT=<x>,<y>,<z>: a teleport asked for at the start (runs without a window).
@@ -154,6 +190,19 @@ namespace shino::cheats
         }
         if (enabled(Cheat::InfiniteHealth))
             std::memcpy(ram + object + kHealth, ram + object + kMaxHealth, 4);
+        int enemies = 0, alive = 0;
+        const bool kills = enabled(Cheat::OneHitKills);
+        forEachEnemy(ram, object, [&](uint32_t, uint32_t healthAt) {
+            ++enemies;
+            const int32_t health = static_cast<int32_t>(read32(ram, healthAt));
+            if (health > 0)
+                ++alive;
+            if (kills && health > 1) // the dead (0) left alone: the game ends them
+            {
+                const int32_t one = 1;
+                std::memcpy(ram + healthAt, &one, 4);
+            }
+        });
         if (g_request.kind != Kind::None)
         {
             float to[3];
@@ -189,6 +238,8 @@ namespace shino::cheats
         p.fz = readF(ram, object + kFacing + 8);
         p.health = static_cast<int32_t>(read32(ram, object + kHealth));
         p.maxHealth = static_cast<int32_t>(read32(ram, object + kMaxHealth));
+        p.enemies = enemies;
+        p.enemiesAlive = alive;
         (void)kMatrix;
     }
 } // namespace shino::cheats

@@ -15,11 +15,16 @@ namespace shino::cheats
             if (ImGui::Checkbox("Infinite health", &health))
                 setEnabled(Cheat::InfiniteHealth, health);
             ImGui::TextDisabled("Keeps the ninja's health at its maximum.");
+            bool kills = enabled(Cheat::OneHitKills);
+            if (ImGui::Checkbox("One-hit kills", &kills))
+                setEnabled(Cheat::OneHitKills, kills);
+            ImGui::TextDisabled("Every guard's health is kept at 1: the next hit kills him (the game's own death).");
 
             ImGui::SeparatorText("Teleport");
             const Player p = player();
             if (p.valid)
-                ImGui::Text("Now: %.1f, %.1f, %.1f (health %d / %d)", p.x, p.y, p.z, p.health, p.maxHealth);
+                ImGui::Text("Now: %.1f, %.1f, %.1f (health %d / %d); guards %d, %d alive", p.x, p.y, p.z, p.health,
+                            p.maxHealth, p.enemies, p.enemiesAlive);
             else
                 ImGui::TextDisabled("The ninja is not in play (a menu, a movie, a load).");
             static float target[3] = {0, 0, 0};
