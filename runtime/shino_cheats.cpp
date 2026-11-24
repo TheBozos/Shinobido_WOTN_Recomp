@@ -17,6 +17,10 @@
 //   what a fight goes after). Every stimulus is pushed by 0x16b3a0: the Unseen cheat drops the player's there
 //   (runtime/shino_port.cpp, the native site at 0x16b93c), and his "seen" events (0x112d60, type 17). What the guards
 //   hear (the brain's noise list, +0x2e0: no source) still reaches them: they go to look, and never find him.
+// - The mission's goal: the object at gp-0x6b14 (0x625c5c) holds the mission's state; its carry part at +0x440 (what
+//   0x2f7b10 gives: +4 the carrier) lists at +0x88 up to 16 markers of the goal area (each an object with a world
+//   matrix, its translation at +0xc0; the second mission's are the four corners of the room where the contact waits).
+//   Carrying the item into that area hands it over (the script's EventItemGoal2, "Cut_Receiver").
 #include "shino_cheats.h"
 
 #include <atomic>
@@ -45,7 +49,7 @@ namespace shino::cheats
         constexpr uint32_t kMaxCharacters = 128;
 
         // The teleport asked for (by the tab or SHINO_TELEPORT), made at the next frame the player is in play.
-        enum class Kind { None, To, By };
+        enum class Kind { None, To, By, Goal };
         struct Request
         {
             Kind kind = Kind::None;
@@ -55,6 +59,10 @@ namespace shino::cheats
         Request g_request;
         Player g_player;
         Player g_slots[kSlots];
+        Goal g_goal;
+        constexpr uint32_t kMissionPointer = 0x625c5c; // gp-0x6b14
+        constexpr uint32_t kCarry = 0x440, kGoalMarkers = 0x88, kMarkerPosition = 0xc0;
+
         std::string g_status;
 
         void setStatus(const std::string &s)
@@ -76,6 +84,39 @@ namespace shino::cheats
             return v;
         }
         void writeF(uint8_t *ram, uint32_t a, float v) { std::memcpy(ram + (a & 0x1FFFFFFu), &v, 4); }
+
+        // The goal markers' centre (the mission's carry part, +0x88), or invalid.
+        Goal findGoal(const uint8_t *ram)
+        {
+            Goal g;
+            const uint32_t mission = read32(ram, kMissionPointer);
+            if (mission < 0x100000u || mission >= 0x2000000u - 0x1000u)
+                return g;
+            float sum[3] = {0, 0, 0};
+            for (uint32_t i = 0; i < 16; ++i)
+            {
+                const uint32_t marker = read32(ram, mission + kCarry + kGoalMarkers + 4 * i);
+                if (marker < 0x100000u || marker >= 0x2000000u - 0x100u)
+                    continue;
+                float v[4];
+                for (uint32_t k = 0; k < 4; ++k)
+                    v[k] = readF(ram, marker + kMarkerPosition + 4 * k);
+                if (v[3] != 1.0f || !std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2]) ||
+                    std::fabs(v[0]) > 1e5f || std::fabs(v[2]) > 1e5f)
+                    continue;
+                for (uint32_t k = 0; k < 3; ++k)
+                    sum[k] += v[k];
+                ++g.markers;
+            }
+            if (g.markers)
+            {
+                g.valid = true;
+                g.x = sum[0] / g.markers;
+                g.y = sum[1] / g.markers;
+                g.z = sum[2] / g.markers;
+            }
+            return g;
+        }
 
         // The player's object, or 0 while there is none (menus, movies, loads).
         uint32_t playerObject(const uint8_t *ram)
@@ -161,6 +202,16 @@ namespace shino::cheats
         std::lock_guard<std::mutex> lock(g_lock);
         g_request = {Kind::By, forward, up, 0};
     }
+    Goal goal()
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        return g_goal;
+    }
+    void teleportToGoal()
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        g_request = {Kind::Goal, 0, 0, 0};
+    }
     void savePosition(int slot)
     {
         std::lock_guard<std::mutex> lock(g_lock);
@@ -199,6 +250,7 @@ namespace shino::cheats
         (void)once;
         const uint32_t object = playerObject(ram);
         std::lock_guard<std::mutex> lock(g_lock);
+        g_goal = findGoal(ram);
         if (!object)
         {
             g_player.valid = false;
@@ -222,7 +274,19 @@ namespace shino::cheats
         if (g_request.kind != Kind::None)
         {
             float to[3];
-            if (g_request.kind == Kind::To)
+            if (g_request.kind == Kind::Goal)
+            {
+                if (!g_goal.valid)
+                {
+                    setStatus("No goal: this mission has no goal area (or it is not placed yet).");
+                    g_request = {};
+                    return;
+                }
+                to[0] = g_goal.x;
+                to[1] = g_goal.y + 1.5f; // a little above the markers' floor
+                to[2] = g_goal.z;
+            }
+            else if (g_request.kind == Kind::To)
             {
                 to[0] = g_request.a;
                 to[1] = g_request.b;

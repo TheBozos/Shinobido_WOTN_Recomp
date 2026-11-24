@@ -504,6 +504,19 @@ The client's portrait on the scroll is drawn at half strength (vertex alpha 0x40
 Save states for these tests: `build/hideout.state` (frame 15700, the Hideout's help), `build/scroll.state` and
 `build/scroll2.state` (the mission scroll's pages 4 and 2).
 
+The second mission completes too: its goal is not a character but an area. The mission's state (the object at
+`gp-0x6b14`, `0x625c5c`) has a carry part at +0x440 (`0x2f7b10`: +4 the carrier, the receivers' list at +0x20) that
+lists at +0x88 the goal's markers: objects with a world matrix (translation at +0xc0), here the four corners of a room
+at (-71 to -112, 12.3, -450 to -473). Carrying the letter's box into it plays the contact's scene ("Good work, you have
+done well."), "Mission Complete!", then the rating (three pages: the mission, the details with its rank, "Invisible"
+for an unseen run, and the total with the trust gained); Triangle closes, back to the Hideout with the reward and four
+new missions. The first mission's goal is in the same place: its markers are on the keep (147, 107, -322).
+Leads that were not it: the script's `SearchSPCharacter` reads the mission's last killed character (+0x16c, set by
+0x15e460, a character's death, role 1 of 0x11d410); `SearchFindCharacter` / `GetFindFlag` the characters who have
+spotted the ninja (+0x114, from the guards' brains in state 5, `0x17d110`); the HUD compass does not point at the goal
+(its star is fixed; an arm glows toward nearby enemies).
+The Cheats tab's "To the mission's goal" (and `SHINO_TELEPORT_AT=<frame>:goal`) teleports to the markers' centre.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is

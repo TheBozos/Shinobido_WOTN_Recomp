@@ -36,6 +36,16 @@ namespace shino::cheats
     void savePosition(int slot);
     bool hasSavedPosition(int slot);
     void loadPosition(int slot);
+    // The mission's goal area, where a carry mission's item is to be taken (runtime/shino_cheats.cpp): the centre of
+    // the markers the mission placed, valid while there are some. teleportToGoal: there (refused when there is none).
+    struct Goal
+    {
+        bool valid = false;
+        float x = 0, y = 0, z = 0;
+        int markers = 0;
+    };
+    Goal goal();
+    void teleportToGoal();
     // What happened last (a teleport made, refused), for the tab.
     std::string status();
 

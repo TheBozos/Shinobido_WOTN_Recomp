@@ -30,9 +30,9 @@ it plays the opening in-engine cutscene at Utakata Castle, then hands over contr
 the castle grounds with his HUD (health, the detection eyes, the compass), the tutorial messages and the pause menu, and
 the guards who spot him fight him (2026-11-24: nine minutes of scripted play from there, without a fault). With the
 cheats it completes the first mission, plays the story movie that follows and reaches the Hideout: its menus, the
-mission scroll, a save to the memory card, and the second mission's town. Before that, it boots at full speed through
-"Sony Computer Entertainment Europe presents" and the memory card check to the title screen. Everything on screen is
-drawn from the game's own data:
+mission scroll, a save to the memory card, and the second mission, played to its end. Before that, it boots at full
+speed through "Sony Computer Entertainment Europe presents" and the memory card check to the title screen. Everything on
+screen is drawn from the game's own data:
 - the game's render scheduler is replaced natively;
 - its VU1 microprograms (its 2D and 3D both run through them) are recompiled to C++ from the player's executable at
   build time, the 3D's VU0 microprograms interpreted;
@@ -137,8 +137,8 @@ Save states: F5 saves, F7 loads, F6 / Shift+F6 pick the slot (0-9). From the com
 older states do not load).
 
 Cheats: the settings window's Cheats tab (F2): infinite health, one-hit kills, guards that never spot the ninja (they
-still hear him and go to look), a teleport (to a point, forward, back or up from where the ninja stands) and four
-saved positions to go back to. Without a window: `SHINO_CHEAT_HEALTH=1`, `SHINO_CHEAT_KILLS=1`,
+still hear him and go to look), a teleport (to a point, forward, back or up from where the ninja stands, or to the
+mission's goal) and four saved positions to go back to. Without a window: `SHINO_CHEAT_HEALTH=1`, `SHINO_CHEAT_KILLS=1`,
 `SHINO_CHEAT_UNSEEN=1`, `SHINO_TELEPORT=<x>,<y>,<z>`.
 
 ### Windows

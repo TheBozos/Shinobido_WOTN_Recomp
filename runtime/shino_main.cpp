@@ -248,14 +248,18 @@ int main(int argc, char **argv)
                 if (p)
                     ++p;
             }
-        // SHINO_TELEPORT_AT=<frame>:<x>,<y>,<z>[;...]: teleports at those frames (play tests: a place to look at).
+        // SHINO_TELEPORT_AT=<frame>:<x>,<y>,<z>[;...]: teleports at those frames (play tests: a place to look at);
+        // <frame>:goal teleports to the mission's goal area (shino_cheats.h).
         if (static const char *e = std::getenv("SHINO_TELEPORT_AT"); e)
             for (const char *p = e; p && *p;)
             {
                 unsigned long long at;
                 float v[3];
+                char word[8] = {};
                 if (std::sscanf(p, "%llu:%f,%f,%f", &at, &v[0], &v[1], &v[2]) == 4 && at == f)
                     shino::cheats::teleportTo(v[0], v[1], v[2]);
+                else if (std::sscanf(p, "%llu:%4[a-z]", &at, word) == 2 && at == f && std::strcmp(word, "goal") == 0)
+                    shino::cheats::teleportToGoal();
                 p = std::strchr(p, ';');
                 if (p)
                     ++p;

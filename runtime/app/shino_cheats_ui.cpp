@@ -57,6 +57,16 @@ namespace shino::cheats
             if (ImGui::Button("Up"))
                 teleportBy(0.0f, step);
             ImGui::TextDisabled("Forward and back go the way the ninja faces; up lifts him (he falls back, onto a roof if one is under him).");
+            const Goal g = goal();
+            ImGui::BeginDisabled(!g.valid);
+            if (ImGui::Button("To the mission's goal"))
+                teleportToGoal();
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (g.valid)
+                ImGui::Text("%.1f, %.1f, %.1f (%d markers)", g.x, g.y, g.z, g.markers);
+            else
+                ImGui::TextDisabled("No goal area in this mission (yet).");
 
             ImGui::SeparatorText("Saved positions");
             for (int slot = 0; slot < kSlots; ++slot)
