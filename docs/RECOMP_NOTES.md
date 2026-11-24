@@ -443,10 +443,29 @@ play (`SHINO_DUMP_RAM_AT=<frame>,...` writes the RAM at those frames to `build/r
   +0x20 (a guard's 24, the player's 100). The guard the script fights went 24 to 19 under one hit.
 - **One-hit kills** (`SHINO_CHEAT_KILLS=1`): every other character's health above 1 is set to 1 each frame, so the next
   hit takes it below 0 and the game's own death follows (the dead, at 0 or below, are left alone).
+- **Guards never spot the ninja** (`SHINO_CHEAT_UNSEEN=1`). A guard's AI is a "brain" object (its class's table at
+  `0x61af90`, the guard at +8; the one the script fights is at `0x1e43790`). It keeps its stimuli in three queues of
+  0x30-byte records (+0x394, +0x3a4, +0x3b4; each `{source, state, -, -, position, priority, kind}`). Each frame its
+  perception (`0x167540`) takes the first (`0x16b950`) into its record at +0x10, and `0x16d5e0` copies that to +0x40:
+  its target, what the fight goes after (`0x34ddb0` reads it, and raises "seen" from it each frame). Every stimulus goes
+  in through one push, `0x16b3a0(brain, queue, source, priority, kind, position)`. Its first step, `0x16b8c0`, refreshes
+  the queue's record of that source and answers 1 when there was one, and the push then adds nothing. The native site
+  at its return (`0x16b93c`) answers 1 for the player when the cheat is on. His "seen" events are dropped too: the
+  character event `0x112d60` (type 17, +0x3e0 the source) is overridden. What the guards hear is not his: a no-source
+  "go and look" record (state 4) from their noise list (+0x2e0, `0x16ebd0`, `0x169ae0`). They still walk to it and never
+  find him. Found by a write watch on the brain's records: they are filled by memcpy, from records on the stack.
+  The earlier leads were wrong. `0x12b7a0` / `0x12ba70` is the player's lock-on, not a guard's sight. A guard's +0x580
+  holds animation slots. Blocking the "seen" event alone changes nothing. `SHINO_TRACE_STIMULI=1` prints each new
+  stimulus and the push's callers. `SHINO_TRACE_SEEN=1` and `SHINO_TRACE_EVENTS=<character>` print the events.
+  `SHINO_TRACE_CHARACTERS=<n>` writes every character's object (4 KB each) every n frames to
+  `build/characters_trace.bin`.
 Checked headless: `SHINO_TELEPORT=60,0,250` from the save state puts him there and he walks on; with
 `SHINO_CHEAT_HEALTH=1` his health stays 100 through the fights that took it to 5; with `SHINO_CHEAT_KILLS=1` the
-guard the script fights goes from 1 to -4 at the hit that took him to 19, and never moves again. The tab is drawn
-only in the window (not looked at yet).
+guard the script fights goes from 1 to -4 at the hit that took him to 19, and never moves again. With
+`SHINO_CHEAT_UNSEEN=1` (12000 frames from the save state), that guard's brain never holds the player. Every one of his
+stimuli (144) is dropped, and his health stays 100, where without the cheat the guard's hits take it to 81 from frame
+9350. Unchanged with the cheats off (the boot's checksums, 3100 frames). The tab is drawn only in the window (not looked
+at yet).
 
 ## Next
 

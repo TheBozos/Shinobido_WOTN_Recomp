@@ -131,9 +131,10 @@ configure with `-DSHINO_ISO=FILE`. `scripts/build_runtime.sh -DSHINO_WINDOW=OFF`
 Save states: F5 saves, F7 loads, F6 / Shift+F6 pick the slot (0-9). From the command line:
 `--save-state FILE --save-state-at N` and `--load-state FILE`.
 
-Cheats: the settings window's Cheats tab (F2): infinite health, one-hit kills, a teleport (to a point, forward, back
-or up from where the ninja stands) and four saved positions to go back to. Without a window: `SHINO_CHEAT_HEALTH=1`,
-`SHINO_CHEAT_KILLS=1`, `SHINO_TELEPORT=<x>,<y>,<z>`.
+Cheats: the settings window's Cheats tab (F2): infinite health, one-hit kills, guards that never spot the ninja (they
+still hear him and go to look), a teleport (to a point, forward, back or up from where the ninja stands) and four
+saved positions to go back to. Without a window: `SHINO_CHEAT_HEALTH=1`, `SHINO_CHEAT_KILLS=1`,
+`SHINO_CHEAT_UNSEEN=1`, `SHINO_TELEPORT=<x>,<y>,<z>`.
 
 ### Windows
 

@@ -11,6 +11,12 @@
 //   (the player first, then the guards). Each character's object has the same layout as the player's and a status
 //   block that starts with its own address again (the player's at +0x630, a guard's at +0x620): health at +0x1c out of
 //   +0x20 (24 for the first mission's guards).
+// - The guards' senses: each guard's brain (its class's table at 0x61af90, +8 the guard) keeps its stimuli in three
+//   queues of 0x30-byte records (+0x394, +0x3a4, +0x3b4: the source, a state, the position at +0x10, a priority and a
+//   kind at +0x20 / +0x24). Each frame (0x167540) it takes the first into its record at +0x10, then +0x40 (its target:
+//   what a fight goes after). Every stimulus is pushed by 0x16b3a0: the Unseen cheat drops the player's there
+//   (runtime/shino_port.cpp, the native site at 0x16b93c), and his "seen" events (0x112d60, type 17). What the guards
+//   hear (the brain's noise list, +0x2e0: no source) still reaches them: they go to look, and never find him.
 #include "shino_cheats.h"
 
 #include <atomic>
@@ -33,7 +39,8 @@ namespace shino::cheats
             return e && *e && *e != '0';
         }
 
-        std::atomic<bool> g_on[2] = {fromEnvironment("SHINO_CHEAT_HEALTH"), fromEnvironment("SHINO_CHEAT_KILLS")};
+        std::atomic<bool> g_on[3] = {fromEnvironment("SHINO_CHEAT_HEALTH"), fromEnvironment("SHINO_CHEAT_KILLS"),
+                                     fromEnvironment("SHINO_CHEAT_UNSEEN")};
         constexpr uint32_t kCharacterTable = 0x625a38; // gp-0x6d38
         constexpr uint32_t kMaxCharacters = 128;
 
@@ -127,6 +134,15 @@ namespace shino::cheats
     } // namespace
 
     bool enabled(Cheat cheat) { return g_on[static_cast<int>(cheat)].load(); }
+
+    bool hidesSource(const uint8_t *ram, uint32_t source, uint32_t position)
+    {
+        if (!enabled(Cheat::Unseen))
+            return false;
+        const uint32_t player = read32(ram, kPlayerPointer);
+        return player && (source == player || (source == 0 && position == player + kPosition));
+    }
+
     void setEnabled(Cheat cheat, bool on) { g_on[static_cast<int>(cheat)] = on; }
 
     Player player()

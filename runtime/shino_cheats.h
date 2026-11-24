@@ -1,6 +1,6 @@
 // Shinobido's cheats: toggles and teleports the player sets in the window's Cheats tab (F2, runtime/app/
 // shino_cheats_ui.cpp) or, for runs without a window, from the environment (SHINO_CHEAT_HEALTH=1,
-// SHINO_CHEAT_KILLS=1, SHINO_TELEPORT=<x>,<y>,<z>). Applied on the game's thread at each frame's end (runtime/shino_main.cpp).
+// SHINO_CHEAT_KILLS=1, SHINO_CHEAT_UNSEEN=1, SHINO_TELEPORT=<x>,<y>,<z>). Applied on the game's thread at each frame's end (runtime/shino_main.cpp).
 #pragma once
 
 #include <cstdint>
@@ -12,6 +12,7 @@ namespace shino::cheats
     {
         InfiniteHealth, // Goh's health kept at its maximum
         OneHitKills,    // every other character's health kept at 1: the next hit kills (the game's own death)
+        Unseen,         // nothing of the ninja's reaches a guard's brain as a target (they never spot him; they still hear)
     };
     bool enabled(Cheat cheat);
     void setEnabled(Cheat cheat, bool on);
@@ -37,6 +38,11 @@ namespace shino::cheats
     void loadPosition(int slot);
     // What happened last (a teleport made, refused), for the tab.
     std::string status();
+
+    // The Unseen cheat (runtime/shino_port.cpp): whether what a guard senses about `source` is dropped: a stimulus for
+    // his brain (the stimulus push 0x16b3a0, `position` 0) or a "seen" event (the character event 0x112d60, type 17,
+    // `position` the address of where): the player's, or his position with no source.
+    bool hidesSource(const uint8_t *ram, uint32_t source, uint32_t position);
 
     // Once a frame, on the game thread (the frame boundary): the enabled cheats' writes, the teleport asked for.
     void apply(uint8_t *ram);

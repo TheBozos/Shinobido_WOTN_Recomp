@@ -19,6 +19,10 @@ namespace shino::cheats
             if (ImGui::Checkbox("One-hit kills", &kills))
                 setEnabled(Cheat::OneHitKills, kills);
             ImGui::TextDisabled("Every guard's health is kept at 1: the next hit kills him (the game's own death).");
+            bool unseen = enabled(Cheat::Unseen);
+            if (ImGui::Checkbox("Guards never spot the ninja", &unseen))
+                setEnabled(Cheat::Unseen, unseen);
+            ImGui::TextDisabled("Nothing of his reaches a guard as a target. They still hear his noises and go to look.");
 
             ImGui::SeparatorText("Teleport");
             const Player p = player();

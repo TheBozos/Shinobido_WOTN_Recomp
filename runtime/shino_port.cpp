@@ -4,6 +4,7 @@
 // direct call in the generated code reaches the port's function. Native instruction sites: each
 // `case 0x...u: // native site` line is listed as a "native 0xADDR" external: the instruction is replaced by the
 // handler, inline. docs/RECOMP_NOTES.md says why each one is there.
+#include "shino_cheats.h"
 #include "shino_port.h"
 #include "bozo/ee/dispatcher.h"
 #include "bozo/ee/kernel.h"
@@ -27,6 +28,30 @@ namespace shino
         {
             uint64_t passes = 0, skips = 0, cycles = 0, withCallback = 0;
         } g_wait;
+
+        // 0x112d60(character, position, type, source): a character's event record (+0x3e4 the type, +0x3e8 the position
+        // it is at, +0x3e0 the one it is about: the guards' "seen", type 17, among them), the game's three stores made
+        // natively. With the Unseen cheat a "seen" whose source is the player is not recorded (with the stimulus push's
+        // native site, 0x16b93c). SHINO_TRACE_SEEN=1: each "seen" and its caller.
+        void characterEvent(uint8_t *rdram, R5900Context *ctx, Runtime *rt)
+        {
+            const uint32_t character = ctx->r[4].uw[0], position = ctx->r[5].uw[0], type = ctx->r[6].uw[0];
+            const uint32_t source = ctx->r[7].uw[0];
+            const bool seen = type == 0x11u;
+            if (static const char *all = std::getenv("SHINO_TRACE_EVENTS"); all && std::strtoul(all, nullptr, 16) == character)
+                std::printf("[shino:event] %x type %x source %x position %x (from %x) vblank %llu\n", character, type, source,
+                            position, ctx->r[31].uw[0], (unsigned long long)bozo::port::vblankCount(rt));
+            if (static const bool trace = std::getenv("SHINO_TRACE_SEEN") != nullptr; trace && seen)
+                std::printf("[shino:seen] %x sees %x (from %x)\n", character, source, ctx->r[31].uw[0]);
+            if (!(seen && cheats::hidesSource(rdram, source, position)))
+            {
+                auto put = [&](uint32_t at, uint32_t v) { std::memcpy(rdram + ((character + at) & 0x1FFFFFFu), &v, 4); };
+                put(0x3e4u, type);
+                put(0x3e8u, position);
+                put(0x3e0u, source);
+            }
+            ctx->pc = ctx->r[31].uw[0];
+        }
 
         bool nativeInstruction(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
         {
@@ -85,6 +110,35 @@ namespace shino
                 }
                 return true;
             }
+            // 0x16b8c0(queue a1, source a2, priority a3, kind t0, position t1), the first step of 0x16b3a0, the push of a
+            // stimulus into a guard's brain (its three queues at +0x394, +0x3a4, +0x3b4, from which the brain takes its
+            // target): it refreshes the queue's record of that source and answers 1 when there was one, and the push then
+            // adds nothing. The Unseen cheat answers 1 for the player: no new stimulus of his reaches a guard's brain (a
+            // refresh calls sceVu0CopyVector, so its argument registers are gone here: only a record already queued, from
+            // before the cheat, is refreshed). SHINO_TRACE_STIMULI=1: each new stimulus and the push's callers.
+            case 0x0016b93cu: // native site: ld ra,0(sp): the stimulus update's return
+            {
+                std::memcpy(&ctx->r[31].ud[0], rdram + (ctx->r[29].uw[0] & 0x1FFFFFFu), 8);
+                if (ctx->r[2].uw[0] != 0)
+                    return true;
+                const uint32_t source = ctx->r[6].uw[0];
+                const bool hidden = cheats::hidesSource(rdram, source, 0);
+                if (static const bool trace = std::getenv("SHINO_TRACE_STIMULI") != nullptr; trace)
+                {
+                    // The push's caller (0x16b3a0 keeps ra at +0x70 of its 0xc0 frame) and, through 0x16b790 (ra at +0x60
+                    // of 0x80), the one above.
+                    auto w = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4); return v; };
+                    float at[3];
+                    std::memcpy(at, rdram + (ctx->r[9].uw[0] & 0x1FFFFFFu), sizeof at);
+                    const uint32_t sp = ctx->r[29].uw[0], caller = w(sp + 0x10 + 0x70), above = w(sp + 0xd0 + 0x60);
+                    std::printf("[shino:stimulus] queue %x source %x priority %d kind %d at %.1f %.1f %.1f%s from %x, %x vblank "
+                                "%llu\n", ctx->r[5].uw[0], source, ctx->r[7].sw[0], ctx->r[8].sw[0], at[0], at[1], at[2],
+                                hidden ? " hidden" : "", caller, above, (unsigned long long)bozo::port::vblankCount(rt));
+                }
+                if (hidden)
+                    ctx->r[2].ud[0] = 1;
+                return true;
+            }
             // 0x326860, the movie player's vblank handler: CSR.FIELD (bit 13) picks the field's half offset.
             case 0x00326880u: // native site: ld v0,0x1000(v0): CSR
                 ctx->r[2].ud[0] = (bozo::port::vblankCount(rt) & 1u) << 13;
@@ -119,6 +173,7 @@ namespace shino
         // their FBRST / CTRL registers and the VUs through VI28 (cfc2/ctc2 FBRST), then calls sceGsResetPath and
         // sceDmaReset, both no-ops natively. There is no VIF, GIF or VU to reset.
         r.registerFunction(0x4454a0, returnZero);
+        r.registerFunction(0x112d60, characterEvent);
         installRender(r);
         r.nativeGraphics(&nativeInstruction);
     }

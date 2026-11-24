@@ -160,6 +160,40 @@ int main(int argc, char **argv)
                     break;
                 p = *next ? next + 1 : next;
             }
+        // SHINO_TRACE_CHARACTERS=<every>: every character of the table at gp-0x6d38 (0x625a38: 16-byte entries from +0x20,
+        // the object at +4), its first 4 KB, every n frames into build/characters_trace.bin (frame, count, then each
+        // object's address and bytes): the search for the guards' fields.
+        if (static const char *every = std::getenv("SHINO_TRACE_CHARACTERS"); every && f % std::max(1ull, std::strtoull(every, nullptr, 10)) == 0)
+        {
+            static FILE *trace = std::fopen("build/characters_trace.bin", "wb");
+            const uint8_t *ram = d.runtime().memory.ram();
+            uint32_t table;
+            std::memcpy(&table, ram + 0x625a38u, 4);
+            if (trace && table >= 0x100000u && table < 0x1F00000u)
+            {
+                uint32_t objects[64];
+                uint32_t count = 0;
+                for (uint32_t i = 0; i < 64; ++i)
+                {
+                    uint32_t object, self;
+                    std::memcpy(&object, ram + table + 0x20 + 16 * i + 4, 4);
+                    if (object < 0x100000u || object >= 0x1FFF000u)
+                        continue;
+                    std::memcpy(&self, ram + object, 4);
+                    if (self == object)
+                        objects[count++] = object;
+                }
+                const uint64_t frame = f;
+                std::fwrite(&frame, 8, 1, trace);
+                std::fwrite(&count, 4, 1, trace);
+                for (uint32_t i = 0; i < count; ++i)
+                {
+                    std::fwrite(&objects[i], 4, 1, trace);
+                    std::fwrite(ram + objects[i], 1, 0x1000u, trace);
+                }
+                std::fflush(trace);
+            }
+        }
         // SHINO_TRACE_PLAYER=<every>[:<address>]: the player's object (or the one at that address) (the pointer at gp-0x6a0c, 0x625d64), its first 8 KB, every n
         // frames into build/player_trace.bin (frame, then the bytes): the search for its fields.
         if (static const char *every = std::getenv("SHINO_TRACE_PLAYER"); every && f % std::max(1ull, std::strtoull(every, nullptr, 10)) == 0)
