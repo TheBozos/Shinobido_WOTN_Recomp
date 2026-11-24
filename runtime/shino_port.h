@@ -34,6 +34,8 @@ namespace shino
         void path1(const uint8_t *vuMemory, uint32_t address);
         // The display flip: the frame drawn so far is published (DISPFB1 of the buffer shown); the game frame ends.
         void flip(Runtime *rt, R5900Context *ctx, uint64_t dispfb, uint64_t display);
+        // The frame's draws dropped (before a frame the port starts itself: a movie's picture).
+        void dropDraws();
         void report();
     }
 

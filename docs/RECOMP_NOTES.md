@@ -358,6 +358,15 @@ PACKED tags):
 The vertex checksums are the same through the New Game run and 3,000 frames of play; the castle's load about 10 to 9.5
 ms of CPU a frame (the machine less loaded than for the numbers below).
 
+Then the renderer's copy: the batches' vertices were copied into the renderer's frame at the flip (`Renderer::draw`,
+3 to 6 MB a frame at the castle's load). BozoEngine's renderer now takes draws assembled in place
+(`appendVertices`, `drawRange`, `continueFrame`): the primitives' vertices are made straight into the frame being
+built, a batch is a range of them drawn at the flip, a two-pass draw's two batches share one range (no second copy
+either), and a batch grows only while its vertices are the last made. A movie's picture, a frame the port starts
+itself, drops the game's draws first (`gs::dropDraws`: beginFrame empties the vertices). The copy's 2 to 4.5% of the
+game thread is gone (`appendVertices` and `drawRange` about 1.7% together); the vertex checksums and a gameplay capture
+are the same.
+
 The game thread's CPU time a frame (headless): at the load 32 ms before (the VU1 recompiled), about 15.5 now; in the
 cutscene 18, about 7.5. The GS translator and VIF take about 5 ms of the load's 17 (the VU1 about 6.5); the renderer's
 own copy of the vertices (BozoEngine's `Renderer::draw`) about 2.5%. Vertex checksums unchanged.
@@ -413,8 +422,7 @@ strong yellow light on some walls.
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
   the largest part (about 1.5 ns a pair: the arithmetic and its clamping). Then the primitives' assembly
-  (`packedFast`, about 7%) and the renderer's own copy of every vertex (BozoEngine's `Renderer::draw`, about 3%: an
-  engine change).
+  (`packedFast`, about 6%).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).

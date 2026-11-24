@@ -340,6 +340,7 @@ namespace shino
             screen.originY = 0;
             screen.width = 512;
             screen.height = 512;
+            gs::dropDraws(); // beginFrame drops the vertices the game's draws were made into
             renderer.beginFrame(screen);
             if (picture)
                 renderer.setBackdrop(picture, screen, 0, 0, 512, 512);

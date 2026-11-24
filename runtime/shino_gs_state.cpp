@@ -566,11 +566,13 @@ namespace shino::gs
         {
             Material material;
             std::shared_ptr<const Texture> texture;
-            std::vector<Vertex> vertices;
+            uint32_t first = 0, count = 0; // its vertices in the renderer's frame being built (appendVertices)
             uint64_t made = 0; // the material's serial (emit): batches with the same one and texture merge
         };
         std::unordered_map<uint32_t, std::vector<Batch>> g_frameDraws; // FRAME.FBP -> draws in order
-        std::vector<std::vector<Vertex>> g_spareVertices;              // the last frame's batches' storage, for the next
+        // The frame's vertices are made straight into the renderer's frame being built (Renderer::appendVertices): a
+        // batch is a range of them, drawn at the flip (drawRange) without a copy; a two-pass draw's batches share one.
+        bozo::render::Renderer &g_renderer = bozo::render::Renderer::instance();
         std::map<std::string, uint64_t> g_survey;                      // SHINO_SURVEY
         uint32_t g_displayFbp = 0;                                     // the frame buffer shown last
         uint64_t g_prims = 0, g_offscreenPrims = 0, g_flips = 0, g_uploads = 0, g_checksum = 0xCBF29CE484222325ull;
@@ -708,7 +710,7 @@ namespace shino::gs
         // Where a primitive's triangles go: its frame buffer's last batch (or last two: a two-pass draw), a new one when
         // the texture or the materials changed. False for ZTST NEVER (not drawn). The vectors stay good while no other
         // primitive is placed.
-        bool targetFor(const Maker &m, std::vector<Vertex> *&into, std::vector<Vertex> *&alsoInto)
+        bool targetFor(const Maker &m, Batch *&into, Batch *&alsoInto)
         {
             const Context &c = *m.c;
             into = alsoInto = nullptr;
@@ -759,18 +761,17 @@ namespace shino::gs
             }
             auto &list = *listOf;
             const std::shared_ptr<Texture> &tex = *m.tex;
-            auto same = [&](const Batch &b, uint64_t serial) { return b.made == serial && b.texture == tex; };
-            // A new batch, empty: its vector one of an earlier frame's (its storage kept: no allocation a batch).
+            // A batch grows only while its vertices are the last made (another frame buffer's draws between: a new one).
+            const uint32_t end = g_renderer.builtVertices();
+            auto same = [&](const Batch &b, uint64_t serial) {
+                return b.made == serial && b.texture == tex && b.first + b.count == end;
+            };
             auto fresh = [&](const Material &material, uint64_t serial) {
                 Batch b;
                 b.material = material;
                 b.texture = tex;
                 b.made = serial;
-                if (!g_spareVertices.empty())
-                {
-                    b.vertices = std::move(g_spareVertices.back());
-                    g_spareVertices.pop_back();
-                }
+                b.first = end;
                 list.push_back(std::move(b));
             };
             const size_t n = list.size();
@@ -779,19 +780,31 @@ namespace shino::gs
                 const uint64_t serial = made.serial + (made.twoPass ? 1u : 0u);
                 if (!(n && same(list[n - 1], serial)))
                     fresh(made.twoPass ? made.fail : made.pass, serial);
-                into = &list.back().vertices;
+                into = &list.back();
             }
             else
             {
-                if (!(n >= 2 && same(list[n - 2], made.serial) && same(list[n - 1], made.serial + 1)))
+                if (!(n >= 2 && same(list[n - 2], made.serial) && same(list[n - 1], made.serial + 1) &&
+                      list[n - 2].first == list[n - 1].first))
                 {
                     fresh(made.pass, made.serial);
                     fresh(made.fail, made.serial + 1);
                 }
-                into = &list[list.size() - 2].vertices;
-                alsoInto = &list.back().vertices;
+                into = &list[list.size() - 2];
+                alsoInto = &list.back();
             }
             return true;
+        }
+
+        // Room for a primitive's n vertices in the frame being built, counted to its batch (and the two-pass draw's
+        // other batch: the same range).
+        Vertex *place(Batch *into, Batch *alsoInto, uint32_t n)
+        {
+            Vertex *p = g_renderer.appendVertices(n);
+            into->count += n;
+            if (alsoInto)
+                alsoInto->count += n;
+            return p;
         }
 
         void checksum(const Vertex *p, size_t n) // SHINO_CHECKSUM: FNV-1a over what is drawn
@@ -810,16 +823,10 @@ namespace shino::gs
             const bool textured = make.textured, fst = make.fst, gouraud = make.gouraud;
             const std::shared_ptr<Texture> &tex = *make.tex;
             ++g_prims;
-            std::vector<Vertex> *into = nullptr, *alsoInto = nullptr;
+            Batch *into = nullptr, *alsoInto = nullptr;
             targetFor(make, into, alsoInto);
-            static std::vector<Vertex> scratch; // a primitive that is not drawn: made for the traces and the checksum
-            if (!into)
-            {
-                scratch.clear();
-                into = &scratch;
-            }
-            std::vector<Vertex> &to = *into;
-            const size_t first = to.size();
+            Vertex tri[6]; // the primitive's triangles
+            uint32_t made = 0;
             if (type == 6) // sprite: two corners
             {
                 const uint32_t col = v[1].rgba;
@@ -827,29 +834,29 @@ namespace shino::gs
                 Vertex tr = a, bl = a;
                 tr.x = b.x; tr.u = b.u;
                 bl.y = b.y; bl.v = b.v;
-                to.push_back(a); to.push_back(tr); to.push_back(b);
-                to.push_back(a); to.push_back(b); to.push_back(bl);
+                tri[0] = a; tri[1] = tr; tri[2] = b;
+                tri[3] = a; tri[4] = b; tri[5] = bl;
+                made = 6;
             }
             else if (type >= 3) // triangles (list, strip, fan)
             {
                 const uint32_t flat = v[2].rgba;
                 for (uint32_t i = 0; i < 3; ++i)
-                    to.push_back(make(v[i], gouraud ? v[i].rgba : flat));
+                    tri[i] = make(v[i], gouraud ? v[i].rgba : flat);
+                made = 3;
             }
             else // lines as thin quads
             {
                 const Vertex a = make(v[0], gouraud ? v[0].rgba : v[1].rgba), b = make(v[1], v[1].rgba);
                 Vertex a2 = a, b2 = b;
                 a2.y += 1; b2.y += 1;
-                to.push_back(a); to.push_back(b); to.push_back(b2);
-                to.push_back(a); to.push_back(b2); to.push_back(a2);
+                tri[0] = a; tri[1] = b; tri[2] = b2;
+                tri[3] = a; tri[4] = b2; tri[5] = a2;
+                made = 6;
             }
-            // The primitive's triangles as made, for the two-pass draw's second batch and the traces.
-            const Vertex *made = to.data() + first;
-            const size_t madeCount = to.size() - first;
-            if (alsoInto)
-                for (size_t i = 0; i < madeCount; ++i) // pushed one by one: inline, no memmove call a primitive
-                    alsoInto->push_back(made[i]);
+            if (into) // drawn (not ZTST NEVER): into the frame being built
+                std::memcpy(place(into, alsoInto, made), tri, made * sizeof(Vertex));
+            const size_t madeCount = made;
             struct View
             {
                 const Vertex *p;
@@ -858,7 +865,7 @@ namespace shino::gs
                 const Vertex &operator[](size_t i) const { return p[i]; }
                 const Vertex *begin() const { return p; }
                 const Vertex *end() const { return p + n; }
-            } const out{made, madeCount};
+            } const out{tri, madeCount};
             if (static const char *dump = std::getenv("SHINO_DUMP_PRIMS"); dump && g_flips == static_cast<uint64_t>(std::atoll(dump)))
                 std::printf("[shino:prim] type=%u tex=%d fbp=%x tex0=%llx v0=(%.1f,%.1f) v1=(%.1f,%.1f) rgba=%08x abe=%d\n", type,
                             int(textured), unsigned(c.frame & 0x1FFu), (unsigned long long)c.tex0, v[0].x, v[0].y,
@@ -998,7 +1005,7 @@ namespace shino::gs
             static const bool sum = std::getenv("SHINO_CHECKSUM") != nullptr;
             Maker make;
             bool placed = false, drawn = false;
-            std::vector<Vertex> *into = nullptr, *alsoInto = nullptr;
+            Batch *into = nullptr, *alsoInto = nullptr;
             for (uint32_t l = 0; l < loops; ++l)
                 for (uint32_t k = 0; k < nreg; ++k, ++at)
                 {
@@ -1051,17 +1058,12 @@ namespace shino::gs
                         const uint32_t flat = t[2].rgba;
                         const Vertex a = make(t[0], gouraud ? t[0].rgba : flat), b = make(t[1], gouraud ? t[1].rgba : flat),
                                      d = make(t[2], gouraud ? t[2].rgba : flat);
-                        if (drawn)
+                        if (drawn) // straight into the frame being built
                         {
-                            into->push_back(a);
-                            into->push_back(b);
-                            into->push_back(d);
-                            if (alsoInto)
-                            {
-                                alsoInto->push_back(a);
-                                alsoInto->push_back(b);
-                                alsoInto->push_back(d);
-                            }
+                            Vertex *p = place(into, alsoInto, 3);
+                            p[0] = a;
+                            p[1] = b;
+                            p[2] = d;
                         }
                         if (sum)
                         {
@@ -1406,7 +1408,7 @@ namespace shino::gs
         const uint32_t psmz = (g_s.ctx[0].zbuf >> 24) & 0xFu;
         screen.depthMax = psmz == 0u ? 4294967295.0f : psmz == 1u ? 16777215.0f : 65535.0f;
         std::optional<prof::Scope> timed(std::in_place, prof::Submit); // up to the frame's end (pacing is not counted)
-        renderer.beginFrame(screen);
+        renderer.continueFrame(screen); // the frame's vertices, made since the last flip, kept
         uint64_t shown = 0;
         // The frame's draws in submission order through the 3D path: the GS's depth test (TEST, ZBUF) on GS Z, the
         // vertices window pixels already (an identity matrix).
@@ -1414,8 +1416,9 @@ namespace shino::gs
         if (auto it = g_frameDraws.find(fbp); it != g_frameDraws.end())
             for (const Batch &b : it->second)
             {
-                renderer.draw(b.material, kIdentity, b.vertices.data(), static_cast<uint32_t>(b.vertices.size()), b.texture);
-                shown += b.vertices.size() / 3;
+                if (b.first + b.count <= renderer.builtVertices()) // (the vertices since the last flip only)
+                    renderer.drawRange(b.material, kIdentity, b.first, b.count, b.texture);
+                shown += b.count / 3;
             }
         if (static const bool onShinoTestQuad = std::getenv("SHINO_TEST_QUAD") != nullptr; onShinoTestQuad) // presentation check: a red quad over the frame
         {
@@ -1433,18 +1436,10 @@ namespace shino::gs
         for (auto &[f, list] : g_frameDraws)
             if (f != fbp)
                 for (const Batch &b : list)
-                    g_offscreenPrims += b.vertices.size() / 3;
-        // The lists emptied, kept in the map (emit keeps a pointer to the last one), their batches' vectors kept for the
-        // next frame's batches.
+                    g_offscreenPrims += b.count / 3;
+        // The lists emptied, kept in the map (emit keeps a pointer to the last one); their vertices went with the frame.
         for (auto &[f, list] : g_frameDraws)
-        {
-            for (Batch &b : list)
-            {
-                b.vertices.clear();
-                g_spareVertices.push_back(std::move(b.vertices));
-            }
             list.clear();
-        }
         renderer.publishOverlay(screen);
         renderer.endFrame();
         if (static const bool onShinoTraceFlip = std::getenv("SHINO_TRACE_FLIP") != nullptr; onShinoTraceFlip && g_flips % 30 == 1)
@@ -1485,6 +1480,14 @@ namespace shino::gs
     }
 
     uint64_t flips() { return g_flips; }
+
+    // A frame the port starts itself (a movie's picture, runtime/shino_render.cpp): the renderer's beginFrame drops the
+    // vertices made since the last flip, so the draws over them go too.
+    void dropDraws()
+    {
+        for (auto &[f, list] : g_frameDraws)
+            list.clear();
+    }
 
     void reportState()
     {
