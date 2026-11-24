@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# A play-test driver (docs/RECOMP_NOTES.md, "Playing the story with the cheats"): the window build, hidden, from a save state.
 # cycle.sh <in-state> <in-frame> <mission index k> <out-state> [mode]
 # One Hideout cycle: normalize the menus, open the mission list, accept mission k, complete it (mode done: the cheat;
 # kill: the kill loop), pass the rating and scenes, save the next Hideout state. Captures in build/cyc/<out name>/.
@@ -27,6 +26,12 @@ tp=[]
 if mode=="done":
     tp=[f"{acc+1500}:done",f"{acc+2100}:done",f"{acc+2700}:done"]
     spam=acc+3200
+elif mode=="mixed": # the kill loop (a target really dies), then the completion if the mission has not ended
+    for i in range(24):
+        t=acc+1100+120*i; tp.append(f"{t}:enemy"); ev+=[f"{t+dd}:SQUARE/6" for dd in (15,35,55,75)]
+    t=acc+1100+120*24
+    tp+=[f"{t}:done",f"{t+600}:done"]
+    spam=t+1100
 else:
     for i in range(40):
         t=acc+1100+120*i; tp.append(f"{t}:enemy"); ev+=[f"{t+dd}:SQUARE/6" for dd in (15,35,55,75)]
