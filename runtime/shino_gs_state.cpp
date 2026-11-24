@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <immintrin.h>
 #include <map>
 #include <memory>
 #include <string>
@@ -220,6 +221,82 @@ namespace shino::gs
             }
         }
 
+        // ---- Whole blocks of an upload (CT32 8 x 8, CT16 16 x 8 pixels: 256 bytes), with SSE2 ---------------------
+        // The column arrangement in a block (kColumn32 / kColumn16): a CT32 row's pixel pairs are 8-byte runs, two
+        // rows interleaved by 8 bytes; a CT16 row's pixels p and p + 8 alternate, two rows interleaved the same way.
+        // So a block is a few unpacks of its rows. `rows` points at the block's top-left pixel, `stride` the upload's
+        // row in bytes. Each 16 bytes compared with what is there before it is stored: whether any changed.
+        inline bool storeChanged(uint8_t *to, __m128i value, bool changed)
+        {
+            const __m128i old = _mm_loadu_si128(reinterpret_cast<const __m128i *>(to));
+            const bool differs = _mm_movemask_epi8(_mm_cmpeq_epi8(old, value)) != 0xFFFF;
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(to), value);
+            return changed || differs;
+        }
+        bool writeBlock32(uint8_t *block, const uint8_t *rows, uint32_t stride)
+        {
+            bool changed = false;
+            for (uint32_t r = 0; r < 8; r += 2)
+            {
+                const uint8_t *a = rows + r * stride, *b = a + stride;
+                const __m128i a0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a)); // pixels 0-3
+                const __m128i a1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + 16)); // 4-7
+                const __m128i b0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(b));
+                const __m128i b1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + 16));
+                uint8_t *to = block + r * 32; // words 16 * (r / 2): rows r, r + 1
+                changed = storeChanged(to, _mm_unpacklo_epi64(a0, b0), changed);       // words 0-3: p0 p1 of both
+                changed = storeChanged(to + 16, _mm_unpackhi_epi64(a0, b0), changed);  // 4-7: p2 p3
+                changed = storeChanged(to + 32, _mm_unpacklo_epi64(a1, b1), changed);  // 8-11: p4 p5
+                changed = storeChanged(to + 48, _mm_unpackhi_epi64(a1, b1), changed);  // 12-15: p6 p7
+            }
+            return changed;
+        }
+        bool writeBlock16(uint8_t *block, const uint8_t *rows, uint32_t stride)
+        {
+            bool changed = false;
+            for (uint32_t r = 0; r < 8; r += 2)
+            {
+                const uint8_t *a = rows + r * stride, *b = a + stride;
+                const __m128i a0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a)); // pixels 0-7
+                const __m128i a1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + 16)); // 8-15
+                const __m128i b0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(b));
+                const __m128i b1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + 16));
+                const __m128i alo = _mm_unpacklo_epi16(a0, a1), ahi = _mm_unpackhi_epi16(a0, a1); // p0 p8 p1 p9 ...
+                const __m128i blo = _mm_unpacklo_epi16(b0, b1), bhi = _mm_unpackhi_epi16(b0, b1);
+                uint8_t *to = block + r * 32; // halfwords 32 * (r / 2)
+                changed = storeChanged(to, _mm_unpacklo_epi64(alo, blo), changed);
+                changed = storeChanged(to + 16, _mm_unpackhi_epi64(alo, blo), changed);
+                changed = storeChanged(to + 32, _mm_unpacklo_epi64(ahi, bhi), changed);
+                changed = storeChanged(to + 48, _mm_unpackhi_epi64(ahi, bhi), changed);
+            }
+            return changed;
+        }
+        // The two against the tables, at start-up (a wrong unpack would scramble every texture silently).
+        struct BlockWriterCheck
+        {
+            BlockWriterCheck()
+            {
+                alignas(16) uint8_t got[256], want[256];
+                uint8_t src[16 * 64];
+                for (uint32_t i = 0; i < sizeof(src); ++i)
+                    src[i] = static_cast<uint8_t>(i * 7 + (i >> 8) * 13);
+                std::memset(got, 0, sizeof(got));
+                writeBlock32(got, src, 64);
+                for (uint32_t r = 0; r < 8; ++r)
+                    for (uint32_t c = 0; c < 8; ++c)
+                        std::memcpy(want + 4 * kColumn32[r][c], src + r * 64 + 4 * c, 4);
+                if (std::memcmp(got, want, 256) != 0)
+                    throw std::runtime_error("GS upload: CT32 block writer does not match the column table");
+                std::memset(got, 0, sizeof(got));
+                writeBlock16(got, src, 64);
+                for (uint32_t r = 0; r < 8; ++r)
+                    for (uint32_t c = 0; c < 16; ++c)
+                        std::memcpy(want + 2 * kColumn16[r][c], src + r * 64 + 2 * c, 2);
+                if (std::memcmp(got, want, 256) != 0)
+                    throw std::runtime_error("GS upload: CT16 block writer does not match the column table");
+            }
+        } g_blockWriterCheck;
+
         // ---- The registers ------------------------------------------------------------------------------------
         struct Context
         {
@@ -248,10 +325,14 @@ namespace shino::gs
             void clear() { n = 0; }
             GsVertex *data() { return v; }
             void push_back(const GsVertex &x) { v[n++] = x; }
-            void eraseAt(uint32_t i)
+            void eraseAt(uint32_t i) // spelled out (GCC made the loop a memmove call)
             {
-                for (uint32_t j = i; j + 1 < n; ++j)
-                    v[j] = v[j + 1];
+                if (i == 0 && n > 1)
+                    v[0] = v[1];
+                if (i <= 1 && n > 2)
+                    v[1] = v[2];
+                if (n > 3)
+                    v[2] = v[3];
                 --n;
             }
         } g_queue;
@@ -282,22 +363,54 @@ namespace shino::gs
 
         // The texture TEX0 names, decoded from the local memory (cached until a page it spans is written).
         std::shared_ptr<Texture> lookUpTexture(uint64_t tex0);
+        // The newest page generation over where the texture TEX0 names may read: its rows at its buffer width, its
+        // palette's page.
+        uint32_t textureGeneration(uint64_t tex0)
+        {
+            const uint32_t tbp = tex0 & 0x3FFFu, tbw = (tex0 >> 14) & 0x3Fu, psm = (tex0 >> 20) & 0x3Fu;
+            const uint32_t tw = std::min<uint32_t>(1u << ((tex0 >> 26) & 0xFu), 1024u);
+            const uint32_t th = std::min<uint32_t>(1u << ((tex0 >> 30) & 0xFu), 1024u);
+            const uint32_t cbp = (tex0 >> 37) & 0x3FFFu;
+            const bool indexed = psm == 0x13 || psm == 0x14 || psm == 0x1B || psm == 0x24 || psm == 0x2C;
+            uint32_t generation = 0;
+            const uint32_t bpp = psm == 0x14 || psm == 0x24 || psm == 0x2C ? 4 : psm == 0x13 || psm == 0x1B ? 8 : (psm == 0x02 || psm == 0x0A) ? 16 : 32;
+            const uint32_t width = std::max(tw, std::max(tbw, 1u) * 64u);
+            const uint32_t bytes = width * th * bpp / 8 + 8192;
+            for (uint32_t p = tbp / 32; p <= (tbp * 256 + bytes) / 8192 && p < 512; ++p)
+                generation = std::max(generation, g_pageGeneration[p]);
+            if (indexed)
+                generation = std::max(generation, g_pageGeneration[(cbp / 32) & 511]);
+            return generation;
+        }
+
         const std::shared_ptr<Texture> &texture(uint64_t tex0)
         {
-            // The textures used lately, nothing written since (a 3D frame alternates between a few between uploads).
+            // The textures used lately (a 3D frame alternates between a few): one is still good while nothing was
+            // written since, or nothing in its pages (the generation over them the same: the uploads between draws go
+            // elsewhere, mostly).
             struct Recent
             {
                 uint64_t tex0 = ~0ull, texa = ~0ull, changes = ~0ull;
+                uint32_t generation = 0;
                 std::shared_ptr<Texture> texture;
             };
             static std::array<Recent, 64> recent;
             Recent &r = recent[(tex0 ^ (tex0 >> 14) ^ (tex0 >> 37) ^ g_s.texa) & 63u];
-            if (r.texture && r.tex0 == tex0 && r.texa == g_s.texa && r.changes == g_changes)
-                return r.texture;
+            if (r.texture && r.tex0 == tex0 && r.texa == g_s.texa)
+            {
+                if (r.changes == g_changes)
+                    return r.texture;
+                if (textureGeneration(tex0) == r.generation)
+                {
+                    r.changes = g_changes;
+                    return r.texture;
+                }
+            }
             r.texture = lookUpTexture(tex0);
             r.tex0 = tex0;
             r.texa = g_s.texa;
             r.changes = g_changes;
+            r.generation = textureGeneration(tex0);
             return r.texture;
         }
         std::shared_ptr<Texture> lookUpTexture(uint64_t tex0)
@@ -308,15 +421,8 @@ namespace shino::gs
             const uint32_t th = std::min<uint32_t>(1u << ((tex0 >> 30) & 0xFu), 1024u);
             const uint32_t cbp = (tex0 >> 37) & 0x3FFFu, cpsm = (tex0 >> 51) & 0xFu, csa = (tex0 >> 56) & 0x1Fu;
             const bool indexed = psm == 0x13 || psm == 0x14 || psm == 0x1B || psm == 0x24 || psm == 0x2C;
-            // The pages it may read: the texture's rows at its buffer width, the palette's.
-            uint32_t generation = 0;
+            const uint32_t generation = textureGeneration(tex0);
             const uint32_t bpp = psm == 0x14 || psm == 0x24 || psm == 0x2C ? 4 : psm == 0x13 || psm == 0x1B ? 8 : (psm == 0x02 || psm == 0x0A) ? 16 : 32;
-            const uint32_t width = std::max(tw, std::max(tbw, 1u) * 64u);
-            const uint32_t bytes = width * th * bpp / 8 + 8192;
-            for (uint32_t p = tbp / 32; p <= (tbp * 256 + bytes) / 8192 && p < 512; ++p)
-                generation = std::max(generation, g_pageGeneration[p]);
-            if (indexed)
-                generation = std::max(generation, g_pageGeneration[(cbp / 32) & 511]);
             const uint64_t key = (tex0 & 0x7FFFFFFFFFull) | (indexed ? (tex0 & 0x1FFFFFE000000000ull) : 0) | uint64_t(g_s.texa & 1) << 63;
             Cached &c = g_textures[key ^ (g_s.texa >> 32) * 0x9E3779B97F4A7C15ull];
             if (c.texture && c.generation == generation)
@@ -436,32 +542,11 @@ namespace shino::gs
             uint32_t carry = 0, carryBits = 0; // CT24's three-byte pixels across quadwords
             std::vector<uint8_t> data;         // the transfer's quadwords, written when complete (imageData)
             uint32_t need = 0;                 // its bytes
-            uint64_t key = 0;                  // where it goes (BITBLTBUF's destination, TRXPOS's, TRXREG)
         } g_image;
 
-        // The last upload to each destination: its bytes' hash and the newest page generation over where it wrote,
-        // after it. The same bytes again, nothing written there since (generations only grow): the upload is skipped.
-        struct Uploaded
-        {
-            uint64_t content = 0;
-            uint32_t generation = 0;
-        };
-        std::unordered_map<uint64_t, Uploaded> g_uploaded;
         std::array<uint64_t, 64> g_uploadBytes{}, g_uploadCount{}; // by PSM (the report)
         uint64_t g_uploadsByBlock = 0, g_uploadsByRow = 0, g_uploadsByPixel = 0;
-        uint64_t g_uploadsSkipped = 0;
-
-        uint32_t newestGeneration(const Image &im)
-        {
-            const uint32_t bpp = im.psm == 0x14 || im.psm == 0x24 || im.psm == 0x2C ? 4 : im.psm == 0x13 || im.psm == 0x1B ? 8
-                                 : (im.psm & 0xFu) == 0x2 || (im.psm & 0xFu) == 0xA                     ? 16 : 32;
-            // Generous: the rows down to the transfer's bottom and a page row more, at least two 64-pixel units wide.
-            const uint64_t extent = uint64_t(im.y0 + im.h + 128) * std::max(im.bw, 2u) * 64u * bpp / 8u + 16384u;
-            uint32_t newest = 0;
-            for (uint64_t p = im.bp / 32u; p <= (uint64_t(im.bp) * 256u + extent) / 8192u && p < 512; ++p)
-                newest = std::max(newest, g_pageGeneration[p]);
-            return newest;
-        }
+        uint64_t g_blocksCompared = 0, g_blocksChanged = 0; // SHINO_PROFILE: the block path's work
 
         void imagePixel(uint32_t value)
         {
@@ -879,7 +964,6 @@ namespace shino::gs
                 const uint32_t bits = im.psm == 0x01 || im.psm == 0x31 ? 24u : (im.psm & 0xFu) == 0x2 || (im.psm & 0xFu) == 0xA ? 16u
                                       : im.psm == 0x13 || im.psm == 0x1B ? 8u : im.psm == 0x14 || im.psm == 0x24 || im.psm == 0x2C ? 4u : 32u;
                 im.need = static_cast<uint32_t>((uint64_t(im.w) * im.h * bits / 8u + 15u) / 16u * 16u);
-                im.key = (s.bitbltbuf >> 32) ^ (s.trxpos >> 32) * 0x9E3779B97F4A7C15ull ^ s.trxreg * 0xC2B2AE3D27D4EB4Full;
                 im.data.clear();
                 im.active = im.need != 0;
                 ++g_uploads;
@@ -972,115 +1056,111 @@ namespace shino::gs
     // destination already holds from the same upload (Uploaded).
     void imageData(const uint8_t *quadword) { imageBytes(quadword, 16); }
 
+    namespace
+    {
+        // An upload's pixels written: `src` holds them all (`size` bytes, at least im.need), straight from the DMA data
+        // or gathered. The game's uploads are all CT32 or CT16 (its 4- and 8-bit textures sent as 32- and 16-bit
+        // pixels): whole blocks when aligned (writeBlock32 / 16: each compared as it is stored), rows otherwise. A page
+        // is marked written only where a value changed.
+        void writeUpload(const uint8_t *src, size_t size)
+        {
+            Image &im = g_image;
+            g_uploadBytes[im.psm & 63u] += im.need;
+            ++g_uploadCount[im.psm & 63u];
+            if (size >= im.need && im.x == 0 && im.y == 0 && (im.psm == 0x00 || im.psm == 0x30 || im.psm == 0x02))
+            {
+                uint16_t *mem16 = reinterpret_cast<uint16_t *>(g_mem.data());
+                const bool ct16 = im.psm == 0x02;
+                const uint32_t blockW = ct16 ? 16u : 8u, bpp = ct16 ? 2u : 4u;
+                if (im.x0 % blockW == 0 && im.w % blockW == 0 && im.y0 % 8u == 0 && im.h % 8u == 0)
+                {
+                    ++g_uploadsByBlock;
+                    const uint32_t stride = im.w * bpp;
+                    for (uint32_t by = 0; by < im.h; by += 8)
+                        for (uint32_t bx = 0; bx < im.w; bx += blockW)
+                        {
+                            const uint32_t x = im.x0 + bx, y = im.y0 + by;
+                            uint32_t at;
+                            if (ct16)
+                            {
+                                const uint32_t b = im.bp + ((y >> 6) * im.bw << 5) + ((x >> 6) << 5) + kBlock16[(y >> 3) & 7][(x >> 4) & 3];
+                                at = ((b << 7) & 0x1FFF80u) * 2u;
+                            }
+                            else
+                            {
+                                const uint32_t b = im.bp + ((y >> 5) * im.bw << 5) + ((x >> 6) << 5) + kBlock32[(y >> 3) & 3][(x >> 3) & 7];
+                                at = ((b << 6) & 0xFFFC0u) * 4u;
+                            }
+                            const uint8_t *rows = src + by * stride + bx * bpp;
+                            ++g_blocksCompared;
+                            if (ct16 ? writeBlock16(memBytes() + at, rows, stride) : writeBlock32(memBytes() + at, rows, stride))
+                            {
+                                ++g_blocksChanged;
+                                touch(at / 4u);
+                            }
+                        }
+                }
+                else if (++g_uploadsByRow; ct16)
+                    for (uint32_t y = 0; y < im.h; ++y)
+                        for (uint32_t x = 0; x < im.w; ++x, src += 2)
+                        {
+                            uint16_t value;
+                            std::memcpy(&value, src, 2);
+                            const uint32_t a = addr16(im.bp, im.bw, im.x0 + x, im.y0 + y, false);
+                            if (mem16[a] != value)
+                            {
+                                mem16[a] = value;
+                                touch(a >> 1);
+                            }
+                        }
+                else
+                    for (uint32_t y = 0; y < im.h; ++y)
+                        for (uint32_t x = 0; x < im.w; ++x, src += 4)
+                        {
+                            uint32_t value;
+                            std::memcpy(&value, src, 4);
+                            const uint32_t a = addr32(im.bp, im.bw, im.x0 + x, im.y0 + y);
+                            if (g_mem[a] != value)
+                            {
+                                g_mem[a] = value;
+                                touch(a);
+                            }
+                        }
+                im.active = false;
+                return;
+            }
+            ++g_uploadsByPixel;
+            for (size_t at = 0; at + 16 <= size && im.active; at += 16)
+                imageQuadword(src + at);
+            im.active = false;
+        }
+    }
+
     void imageBytes(const uint8_t *bytes, uint32_t count)
     {
         Image &im = g_image;
         if (!im.active)
             return;
+        if (im.data.empty() && count >= im.need) // all of it here: written from the DMA data, no copy
+        {
+            writeUpload(bytes, count);
+            return;
+        }
         im.data.insert(im.data.end(), bytes, bytes + count);
         if (im.data.size() < im.need)
             return;
-        const uint64_t content = bozo::hash::xxh64(im.data.data(), im.need, im.key);
-        Uploaded &u = g_uploaded[im.key];
-        if (u.content == content && u.generation == newestGeneration(im) && u.generation != 0)
-        {
-            ++g_uploadsSkipped;
-            im.active = false;
-            im.data.clear();
-            return;
-        }
-        g_uploadBytes[im.psm & 63u] += im.need;
-        ++g_uploadCount[im.psm & 63u];
-        imageFlush();
-        u.content = content;
-        u.generation = newestGeneration(im);
+        writeUpload(im.data.data(), im.data.size());
+        im.data.clear();
     }
 
-    // The gathered quadwords written (all of an upload, or what came of one cut short).
+    // What came of an upload cut short (a new TRXDIR before its data was all there), written as it is.
     void imageFlush()
     {
         Image &im = g_image;
         if (!im.active)
             return;
-        std::vector<uint8_t> data;
-        data.swap(im.data);
-        // The game's uploads are all CT32 or CT16 (its 4- and 8-bit textures sent as 32- and 16-bit pixels): whole
-        // transfers of those written row by row.
-        if (data.size() >= im.need && im.x == 0 && im.y == 0 && (im.psm == 0x00 || im.psm == 0x30 || im.psm == 0x02))
-        {
-            const uint8_t *src = data.data();
-            uint16_t *mem16 = reinterpret_cast<uint16_t *>(g_mem.data());
-            const bool ct16 = im.psm == 0x02;
-            const uint32_t blockW = ct16 ? 16u : 8u;
-            if (im.x0 % blockW == 0 && im.w % blockW == 0 && im.y0 % 8u == 0 && im.h % 8u == 0)
-            {
-                // Whole blocks (256 bytes: CT32 8 x 8, CT16 16 x 8): gathered in the block's own order, then compared
-                // and copied at once.
-                ++g_uploadsByBlock;
-                alignas(16) uint8_t block[256];
-                for (uint32_t by = 0; by < im.h; by += 8)
-                    for (uint32_t bx = 0; bx < im.w; bx += blockW)
-                    {
-                        const uint32_t x = im.x0 + bx, y = im.y0 + by;
-                        uint32_t at;
-                        if (ct16)
-                        {
-                            const uint32_t b = im.bp + ((y >> 6) * im.bw << 5) + ((x >> 6) << 5) + kBlock16[(y >> 3) & 7][(x >> 4) & 3];
-                            at = ((b << 7) & 0x1FFF80u) * 2u;
-                            for (uint32_t r = 0; r < 8; ++r)
-                                for (uint32_t c = 0; c < 16; ++c)
-                                    std::memcpy(block + 2 * kColumn16[r][c], src + 2 * ((by + r) * im.w + bx + c), 2);
-                        }
-                        else
-                        {
-                            const uint32_t b = im.bp + ((y >> 5) * im.bw << 5) + ((x >> 6) << 5) + kBlock32[(y >> 3) & 3][(x >> 3) & 7];
-                            at = ((b << 6) & 0xFFFC0u) * 4u;
-                            for (uint32_t r = 0; r < 8; ++r)
-                                for (uint32_t c = 0; c < 8; ++c)
-                                    std::memcpy(block + 4 * kColumn32[r][c], src + 4 * ((by + r) * im.w + bx + c), 4);
-                        }
-                        if (std::memcmp(memBytes() + at, block, 256) != 0)
-                        {
-                            std::memcpy(memBytes() + at, block, 256);
-                            touch(at / 4u);
-                        }
-                    }
-            }
-            else if (++g_uploadsByRow; ct16)
-                for (uint32_t y = 0; y < im.h; ++y)
-                    for (uint32_t x = 0; x < im.w; ++x, src += 2)
-                    {
-                        uint16_t value;
-                        std::memcpy(&value, src, 2);
-                        const uint32_t a = addr16(im.bp, im.bw, im.x0 + x, im.y0 + y, false);
-                        if (mem16[a] != value)
-                        {
-                            mem16[a] = value;
-                            touch(a >> 1);
-                        }
-                    }
-            else
-                for (uint32_t y = 0; y < im.h; ++y)
-                    for (uint32_t x = 0; x < im.w; ++x, src += 4)
-                    {
-                        uint32_t value;
-                        std::memcpy(&value, src, 4);
-                        const uint32_t a = addr32(im.bp, im.bw, im.x0 + x, im.y0 + y);
-                        if (g_mem[a] != value)
-                        {
-                            g_mem[a] = value;
-                            touch(a);
-                        }
-                    }
-            im.active = false;
-            im.data.swap(data); // its capacity, for the next
-            im.data.clear();
-            return;
-        }
-        ++g_uploadsByPixel;
-        for (size_t at = 0; at + 16 <= data.size() && im.active; at += 16)
-            imageQuadword(data.data() + at);
-        im.active = false;
+        writeUpload(im.data.data(), im.data.size());
+        im.data.clear();
     }
 
     void imageQuadword(const uint8_t *quadword)
@@ -1205,6 +1285,17 @@ namespace shino::gs
                         double(g_lookups - lookups) / 250, double(g_hashes - hashes) / 250,
                         double(g_hashedBytes - hashed) / 250 / 1024, double(g_decodes - decodes) / 250);
             lookups = g_lookups, hashes = g_hashes, hashed = g_hashedBytes, decodes = g_decodes;
+            static uint64_t uploads = 0, bytes = 0, blocks = 0, changedBlocks = 0, prims = 0;
+            uint64_t uploadBytes = 0;
+            for (const uint64_t b : g_uploadBytes)
+                uploadBytes += b;
+            std::printf("[shino:profile] uploads a flip: %.0f, %.0f KB written, %.0f blocks "
+                        "compared, %.0f changed; %.0f primitives\n",
+                        double(g_uploads - uploads) / 250,
+                        double(uploadBytes - bytes) / 250 / 1024, double(g_blocksCompared - blocks) / 250,
+                        double(g_blocksChanged - changedBlocks) / 250, double(g_prims - prims) / 250);
+            uploads = g_uploads, bytes = uploadBytes, blocks = g_blocksCompared;
+            changedBlocks = g_blocksChanged, prims = g_prims;
         }
         prof::flip();
         if (static const bool onShinoChecksum = std::getenv("SHINO_CHECKSUM") != nullptr; onShinoChecksum && g_flips % 500 == 0)
@@ -1222,8 +1313,8 @@ namespace shino::gs
             if (g_uploadCount[psm])
                 std::printf("[shino:upload] psm %02x: %llu uploads, %llu bytes\n", psm, (unsigned long long)g_uploadCount[psm],
                             (unsigned long long)g_uploadBytes[psm]);
-        std::printf("[shino:gs] prims=%llu offscreen_triangles=%llu flips=%llu uploads=%llu (%llu unchanged, skipped) texture_decodes=%llu\n",
+        std::printf("[shino:gs] prims=%llu offscreen_triangles=%llu flips=%llu uploads=%llu (blocks changed %llu of %llu) texture_decodes=%llu\n",
                     (unsigned long long)g_prims, (unsigned long long)g_offscreenPrims, (unsigned long long)g_flips,
-                    (unsigned long long)g_uploads, (unsigned long long)g_uploadsSkipped, (unsigned long long)g_decodes);
+                    (unsigned long long)g_uploads, (unsigned long long)g_blocksChanged, (unsigned long long)g_blocksCompared, (unsigned long long)g_decodes);
     }
 } // namespace shino::gs

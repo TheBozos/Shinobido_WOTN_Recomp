@@ -16,6 +16,7 @@
 #include "bozo/runtime_api.h"
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -115,7 +116,7 @@ namespace shino
                 }
                 const uint8_t *q = p + h.at;
                 bool ended = false;
-                if (h.left == 0)
+                if (h.left == 0) // a tag
                 {
                     uint64_t lo;
                     std::memcpy(&lo, q, 8);
@@ -123,11 +124,17 @@ namespace shino
                     h.left = flg == 0 ? loops * nreg : flg == 1 ? (loops * nreg + 1) / 2 : loops;
                     h.eop = (lo >> 15) & 1u;
                     ended = h.left == 0 && h.eop;
+                    gifData(q, 16);
+                    h.at += 16;
                 }
-                else
-                    ended = --h.left == 0 && h.eop;
-                gifData(q, 16);
-                h.at += 16;
+                else // its data: as much as this piece holds at once (an image's pixels in one run, not by quadword)
+                {
+                    const uint32_t run = std::min<uint32_t>(h.left, (n - h.at) / 16u);
+                    gifData(q, run * 16u);
+                    h.at += run * 16u;
+                    h.left -= run;
+                    ended = h.left == 0 && h.eop;
+                }
                 if (ended)
                 {
                     ++h.groups;

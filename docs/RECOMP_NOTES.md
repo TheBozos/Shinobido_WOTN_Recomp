@@ -330,8 +330,22 @@ load the machine. At the castle's load (flips 1600 to 2100 of the New Game run),
   XGKICK's PACKED data run in the translator's own file (no call a quadword).
 - **VU1**: OPMULA / OPMSUB (the 3D's cross products) inline in the compiled code (they went through `upper()`).
 
-The game thread's CPU time a frame (headless): at the load 32 ms before (the VU1 recompiled), about 17 now; in the
-cutscene 18, about 10.5. The GS translator and VIF take about 5 ms of the load's 17 (the VU1 about 6.5); the renderer's
+Then the uploads and the draws (`SHINO_PROFILE=1` also prints the uploads a flip: about 200 at the castle's load, 1.3
+MB, nearly every 256-byte block of them changed: the game streams different textures through the same areas each
+frame):
+- **The held GIF chain** (PATH3 behind MSKPATH3, `sendHeld`) went to the translator one quadword a call, so an image's
+  pixels came to the upload 16 bytes at a time and were always gathered into a copy. A tag's data now goes as one run
+  (as far as the DMA piece holds it): an upload whose pixels arrive at once is written from the DMA data, no copy.
+- **The whole-upload hash** (to skip an upload of the bytes already there) never skipped one in 3D: gone (each block
+  is still compared, and a page is marked written only where something changed).
+- **Blocks** (CT32 8 x 8, CT16 16 x 8) put together with SSE2 unpacks of their rows (a CT32 row's pixel pairs are
+  8-byte runs, two rows interleaved; a CT16 row's pixels p and p + 8 alternate), each 16 bytes compared as it is
+  stored; checked against the column tables at start-up (`writeBlock32` / `writeBlock16`).
+- **The textures used last** stay good after an upload elsewhere: the generation over their own pages compared.
+- The vertex queue's shift spelled out (GCC made the loop a memmove call).
+
+The game thread's CPU time a frame (headless): at the load 32 ms before (the VU1 recompiled), about 15.5 now; in the
+cutscene 18, about 7.5. The GS translator and VIF take about 5 ms of the load's 17 (the VU1 about 6.5); the renderer's
 own copy of the vertices (BozoEngine's `Renderer::draw`) about 2.5%. Vertex checksums unchanged.
 
 ## Scissor, FBMSK, the frame as a texture (2026-11-24)
@@ -367,8 +381,11 @@ strong yellow light on some walls.
 
 ## Next
 
-- Speed: the castle's load takes about 16 ms of CPU a frame (40 ms at 25 frames a second); the compiled VU1 code is
-  still the largest part (about 1.5 ns a pair: the arithmetic and its clamping), then the uploads and the draws.
+- Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
+  the largest part (about 1.5 ns a pair: the arithmetic and its clamping). Then: the game's frame-end wait (`0x443728`
+  to `0x443760`: it loops 32 EE cycles at a time on two counters and a flag the vblank sets, calling an idle callback;
+  about 6% of the thread), the renderer's own copy of every vertex (BozoEngine's `Renderer::draw`, about 4.5%: an
+  engine change), the primitives' assembly (`emit`, about 6%).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).
