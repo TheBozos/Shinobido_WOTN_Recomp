@@ -250,7 +250,7 @@ int main(int argc, char **argv)
             }
         // SHINO_TELEPORT_AT=<frame>:<x>,<y>,<z>[;...]: teleports at those frames (play tests: a place to look at);
         // <frame>:goal, <frame>:item, <frame>:enemy teleport to those places of the mission, <frame>:char<n> behind the
-        // character table's entry n (shino_cheats.h).
+        // character table's entry n, <frame>:done marks the mission completed (shino_cheats.h).
         if (static const char *e = std::getenv("SHINO_TELEPORT_AT"); e)
             for (const char *p = e; p && *p;)
             {
@@ -269,6 +269,8 @@ int main(int argc, char **argv)
                         shino::cheats::teleportToItem();
                     else if (std::strcmp(word, "enemy") == 0)
                         shino::cheats::teleportToEnemy();
+                    else if (std::strcmp(word, "done") == 0)
+                        shino::cheats::completeMission();
                 }
                 p = std::strchr(p, ';');
                 if (p)

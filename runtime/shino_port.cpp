@@ -139,6 +139,31 @@ namespace shino
                     ctx->r[2].ud[0] = 1;
                 return true;
             }
+            // 0x373c40(mission, event, flag): the mission's event (its byte +0x50, what the script's GetEventTiming reads:
+            // its start, the target found, the item delivered, the player dead...). SHINO_TRACE_MISSION_EVENTS=1: each.
+            case 0x00373c54u: // native site: sb s1,0x50(a0): the mission's event
+            {
+                rdram[(ctx->r[4].uw[0] + 0x50u) & 0x1FFFFFFu] = static_cast<uint8_t>(ctx->r[17].uw[0]);
+                if (static const bool trace = std::getenv("SHINO_TRACE_MISSION_EVENTS") != nullptr; trace)
+                    std::printf("[shino:mission] event %u (flag %u) from %x vblank %llu%c", ctx->r[17].uw[0] & 0xffu,
+                                ctx->r[6].uw[0], ctx->r[31].uw[0], (unsigned long long)bozo::port::vblankCount(rt), 10);
+                return true;
+            }
+            // 0x180470(manager, state): the mission flow's state machine (+0xc its state, 23 of them; some raise the
+            // mission's event through 0x2f7bf0). SHINO_TRACE_MISSION_EVENTS=1: each change too.
+            case 0x00180484u: // native site: sw a1,0xc(a0): the mission flow's state
+            {
+                const uint32_t at = (ctx->r[4].uw[0] + 0xcu) & 0x1FFFFFFu;
+                if (static const bool trace = std::getenv("SHINO_TRACE_MISSION_EVENTS") != nullptr; trace)
+                {
+                    uint32_t old;
+                    std::memcpy(&old, rdram + at, 4);
+                    std::printf("[shino:mission] %x state %u -> %u from %x vblank %llu%c", ctx->r[4].uw[0], old,
+                                ctx->r[5].uw[0], ctx->r[31].uw[0], (unsigned long long)bozo::port::vblankCount(rt), 10);
+                }
+                std::memcpy(rdram + at, &ctx->r[5].uw[0], 4);
+                return true;
+            }
             // 0x326860, the movie player's vblank handler: CSR.FIELD (bit 13) picks the field's half offset.
             case 0x00326880u: // native site: ld v0,0x1000(v0): CSR
                 ctx->r[2].ud[0] = (bozo::port::vblankCount(rt) & 1u) << 13;

@@ -54,6 +54,10 @@ namespace shino::cheats
     void teleportToGoal();
     void teleportToItem();
     void teleportToEnemy();
+    // Marks the mission as completed (its completion flags, the mission state's +0x440 part's +0x16 and +0x17, as the
+    // game sets them when an objective is met): the game then plays "Mission Complete!" and its rating. For play tests
+    // past a mission whose objective is not understood yet (the reconnaissance missions).
+    void completeMission();
     // To the character at that index of the character table (0 the player), a few units behind it: following one.
     void teleportToCharacter(int index);
     // What happened last (a teleport made, refused), for the tab.

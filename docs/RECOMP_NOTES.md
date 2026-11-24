@@ -550,6 +550,32 @@ room the ninja cannot leave (a teleport out is pulled back). The scripts' events
 `EventSPPullout`, `EventTimeup` (Cut_PlayerMorning), `Cut_PlayerReturn`. Both played without a fault.
 `SHINO_TELEPORT_AT=<frame>:char<n>`: behind the character table's entry n (following one).
 
+### How a mission ends (2026-11-24)
+
+The mission's state (the object at `gp-0x6b14`) holds at +0x2b0 its mission (+0x50 the event byte the script's
+`GetEventTiming` reads; `0x373c40` sets it, `0x373fd0` raises it with its rules) and at +0x440 the completion part
+(+0 the mission data: +0x86 its type, +0x64 how many of it are needed; +0x16 / +0x17 met, +0x18, +0x19 flags). A
+flow object (`0x101b4e0` here, `0x180470` its state machine at +0xc, 23 states) checks it each frame (`0x17ee10`):
++0x16 and +0x17 both set leads to state 12 ("Mission Complete!") or, for the missions with a delivery prompt, 15
+("Send to the recipient right now?"). Events seen: 24 the item delivered or carried out (from `0x374058` and
+`0x31b414`), 19 the ninja found by the target's group (`0x31adb0`, from the guards' brains in state 5: they join the
+find list +0x114), 21 the target dead, 14 the end of "Get those Bow Designs". The completion code by type (`0x377650`'s
+table at `0x60f560`; the exit markers' `0x3777d0`) has no case for type 16, the reconnaissance missions: what completes
+them is still not found. Quitting from the pause menu ("Quit") fails a mission ("Mission Failed!", 0%, -2% trust);
+27 game minutes of waiting, being found and fighting, killing the lord and returning to the start do not end it.
+`SHINO_TRACE_MISSION_EVENTS=1` prints each event and each change of the flow's state (native sites `0x373c54` and
+`0x180484`, the same stores when the trace is off: the boot's checksums are unchanged).
+
+Cheats: `<frame>:done` in `SHINO_TELEPORT_AT` (the tab's "Complete the mission") sets +0x16 and +0x17: the game plays
+"Mission Complete!" and its rating (used for "Infiltrate Fudo Castle": 90%, "Invisible"). The item teleport puts the
+ninja just short of the item along the way he faces, so Grab takes it.
+
+With these, from the Hideout after "Infiltrate Fudo Castle" (`build/hideout5.state`, frame 29900: "Steal the food and
+weaken the enemy", "Steal back the jewel", "Deliver the Bow Designs", "Get those Bow Designs"): "Deliver the Bow
+Designs" (the goal teleport) and "Get those Bow Designs" (item, then goal) play to "Mission Complete!". The two
+"Steal" missions (type 10) are not done: their item is where the teleport cannot reach it (inside a building), and at
+the exit the game asks to quit.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is

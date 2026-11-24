@@ -73,6 +73,10 @@ namespace shino::cheats
             placeRow("To the item to take", item(), teleportToItem, "No item to take (or he carries it).");
             placeRow("To the nearest enemy", enemy(), teleportToEnemy, "No enemy left alive.");
             ImGui::TextDisabled("The goal: a carry mission's room, or the nearest way out. The enemy: just behind him.");
+            if (ImGui::Button("Complete the mission"))
+                completeMission();
+            ImGui::SameLine();
+            ImGui::TextDisabled("Its objective counted as met (for missions whose trigger is not known yet).");
 
             ImGui::SeparatorText("Saved positions");
             for (int slot = 0; slot < kSlots; ++slot)

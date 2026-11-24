@@ -53,7 +53,7 @@ namespace shino::cheats
         constexpr uint32_t kStatus = 0x45c; // a character's status block (its health at +0x1c, out of +0x20)
 
         // The teleport asked for (by the tab or SHINO_TELEPORT), made at the next frame the player is in play.
-        enum class Kind { None, To, By, Goal, Item, Enemy, Character };
+        enum class Kind { None, To, By, Goal, Item, Enemy, Character, Complete };
         struct Request
         {
             Kind kind = Kind::None;
@@ -293,6 +293,11 @@ namespace shino::cheats
         std::lock_guard<std::mutex> lock(g_lock);
         g_request = {Kind::Enemy, 0, 0, 0};
     }
+    void completeMission()
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        g_request = {Kind::Complete, 0, 0, 0};
+    }
     void teleportToCharacter(int index)
     {
         std::lock_guard<std::mutex> lock(g_lock);
@@ -380,7 +385,18 @@ namespace shino::cheats
         {
             float to[3] = {0, 0, 0};
             bool go = true;
-            if (g_request.kind == Kind::Character)
+            if (g_request.kind == Kind::Complete)
+            {
+                const uint32_t mission = read32(ram, kMissionPointer);
+                if (mission >= 0x100000u && mission < 0x2000000u - 0x1000u)
+                {
+                    ram[(mission + kCarry + 0x16u) & 0x1FFFFFFu] = 1;
+                    ram[(mission + kCarry + 0x17u) & 0x1FFFFFFu] = 1;
+                    setStatus("Mission marked as completed.");
+                }
+                go = false;
+            }
+            else if (g_request.kind == Kind::Character)
             {
                 const uint32_t table = read32(ram, kCharacterTable);
                 const uint32_t index = static_cast<uint32_t>(g_request.a);
@@ -414,10 +430,17 @@ namespace shino::cheats
                 to[0] = place.x;
                 to[1] = place.y + 1.5f; // a little above the markers' floor, the item's or the enemy's feet
                 to[2] = place.z;
-                if (g_request.kind == Kind::Item) // beside it, not on it (Grab takes what is in front)
+                if (g_request.kind == Kind::Item) // just short of it, facing it (Grab takes what is in front of him)
                 {
-                    to[0] -= 1.4f;
+                    float fx = readF(ram, object + kFacing), fz = readF(ram, object + kFacing + 8);
+                    const float length = std::sqrt(fx * fx + fz * fz);
+                    if (length > 1e-4f)
+                        fx /= length, fz /= length;
+                    else
+                        fx = 1.0f, fz = 0.0f;
+                    to[0] -= fx * 1.4f;
                     to[1] = place.y + 2.0f;
+                    to[2] -= fz * 1.4f;
                 }
                 if (g_request.kind == Kind::Enemy) // just behind him, the way he faces
                 {
