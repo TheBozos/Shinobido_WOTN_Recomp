@@ -54,6 +54,8 @@ namespace shino::cheats
     void teleportToGoal();
     void teleportToItem();
     void teleportToEnemy();
+    // To the character at that index of the character table (0 the player), a few units behind it: following one.
+    void teleportToCharacter(int index);
     // What happened last (a teleport made, refused), for the tab.
     std::string status();
 

@@ -536,6 +536,20 @@ enemies the cheats could not see).
 Cheats tab: "To the goal" (the markers' centre when close together, else the nearest: an exit), "To the item to
 take", "To the nearest enemy"; `SHINO_TELEPORT_AT` keywords `goal`, `item`, `enemy`; `SHINO_TRACE_ENEMIES=1`.
 
+Played in one chain from there (each result kept: `build/hideout3.state` at 21450 after "Get back what I loaned
+them", `build/hideout4.state` at 26900 after "The barbarian chieftain"): the Hideout then offers "Secretly eliminate
+the enemy", "The barbarian chieftain" (an Assassination Mission, Phantom Forest: kill the barbarian chieftain), "Rub
+out Itamiya, the merchant" and "Do it in secret"; all three kill missions play to "Mission Complete!" (99% for the
+chieftain, 2,945 Mon). After the chieftain the story offers two **Reconnaissance Missions** ("First, observe Akame's
+man", Sorgen Town; "Infiltrate Fudo Castle", Fudo Castle: "Get back alive", no failure condition, "Don't kill
+anyone" as the special contract). Neither is finished yet: they have no goal markers and no item; the castle's lord
+(type 0x15, 310 health, on the top floor at (-218, 368, -470)) and Akame's man (type 0x8f, pacing near (-305, 1020))
+were reached unseen and watched for minutes, and the start point revisited, without an event. Seen by the lord's
+group, the mission state records them (+0x3c0 their type, +0x3c4 a list, +0x41c the lord) and a fight starts in a
+room the ninja cannot leave (a teleport out is pulled back). The scripts' events: `EventSPFind` (Cut_SPCharaStart),
+`EventSPPullout`, `EventTimeup` (Cut_PlayerMorning), `Cut_PlayerReturn`. Both played without a fault.
+`SHINO_TELEPORT_AT=<frame>:char<n>`: behind the character table's entry n (following one).
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is

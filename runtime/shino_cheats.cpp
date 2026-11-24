@@ -53,7 +53,7 @@ namespace shino::cheats
         constexpr uint32_t kStatus = 0x45c; // a character's status block (its health at +0x1c, out of +0x20)
 
         // The teleport asked for (by the tab or SHINO_TELEPORT), made at the next frame the player is in play.
-        enum class Kind { None, To, By, Goal, Item, Enemy };
+        enum class Kind { None, To, By, Goal, Item, Enemy, Character };
         struct Request
         {
             Kind kind = Kind::None;
@@ -293,6 +293,11 @@ namespace shino::cheats
         std::lock_guard<std::mutex> lock(g_lock);
         g_request = {Kind::Enemy, 0, 0, 0};
     }
+    void teleportToCharacter(int index)
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        g_request = {Kind::Character, static_cast<float>(index), 0, 0};
+    }
     void savePosition(int slot)
     {
         std::lock_guard<std::mutex> lock(g_lock);
@@ -373,9 +378,30 @@ namespace shino::cheats
         });
         if (g_request.kind != Kind::None)
         {
-            float to[3];
+            float to[3] = {0, 0, 0};
             bool go = true;
-            if (g_request.kind == Kind::Goal || g_request.kind == Kind::Item || g_request.kind == Kind::Enemy)
+            if (g_request.kind == Kind::Character)
+            {
+                const uint32_t table = read32(ram, kCharacterTable);
+                const uint32_t index = static_cast<uint32_t>(g_request.a);
+                const uint32_t who = table >= 0x100000u && index < kMaxCharacters ? read32(ram, table + 0x20 + 16 * index + 4) : 0;
+                if (who < 0x100000u || who >= 0x2000000u - 0x1000u || read32(ram, who) != who)
+                {
+                    setStatus("No such character.");
+                    go = false;
+                }
+                else
+                {
+                    float fx = readF(ram, who + kFacing), fz = readF(ram, who + kFacing + 8);
+                    const float length = std::sqrt(fx * fx + fz * fz);
+                    if (length > 1e-4f)
+                        fx /= length, fz /= length;
+                    to[0] = readF(ram, who + kPosition) - fx * 6.0f;
+                    to[1] = readF(ram, who + kPosition + 4) + 0.5f;
+                    to[2] = readF(ram, who + kPosition + 8) - fz * 6.0f;
+                }
+            }
+            else if (g_request.kind == Kind::Goal || g_request.kind == Kind::Item || g_request.kind == Kind::Enemy)
             {
                 const Place &place = g_request.kind == Kind::Goal ? g_goal : g_request.kind == Kind::Item ? g_item : g_enemy;
                 if (!place.valid)
