@@ -48,21 +48,27 @@ for m in re.finditer(re.escape(news), ram):
 # order (rows are written in turn), mission-type names left out.
 TYPES = {'Total Destruction', 'Assassination', 'Assault', 'Escort', 'Guard', 'Duel', 'Rescue', 'Robbery', 'Thievery',
          'Transport', 'Reconnaissance', 'Collection', 'Kidnapping', 'Hunting', 'News'}
-def row_titles(dump):
-    """The list rows' title strings (16-byte aligned, 0x1760000..0x1780000), mission types left out."""
+def row_titles(dump, lo=0x1760000, hi=0x1780000):
+    """The list rows' title strings (16-byte aligned, lo..hi), mission types left out, in address order."""
     out = []
-    for m in re.finditer(rb'(?:[\x20-\x7e]\x00){8,}\x00\x00', dump[0x1760000:0x1780000]):
+    for m in re.finditer(rb'(?:[\x20-\x7e]\x00){8,}\x00\x00', dump[lo:hi]):
         if m.start() % 0x10:
             continue
         t = m.group()[:-2].decode('utf-16-le').strip()
-        if re.match(r"[A-Z][A-Za-z' ,!?-]+$", t) and t not in TYPES and len(t) < 60:
+        if re.match(r"[A-Z][A-Za-z' ,!?-]+$", t) and t not in TYPES and len(t) < 60 and t not in out:
             out.append(t)
     return out
 
 
 if len(sys.argv) > 2 and len([t for t in titles if t]) < len(offered):
     shown = [t for t in titles if t]
-    seen = set(shown) | set(row_titles(ram))
+    # the first view's other rows (the "News" block can stop short): strings at 0x1740000..0x1760000, in order
+    for t in row_titles(ram, 0x1740000, 0x1760000):
+        if len(shown) >= min(4, len(offered)):
+            break
+        if t not in shown:
+            shown.append(t)
+    seen = set(shown) | set(row_titles(ram)) | set(row_titles(ram, 0x1740000, 0x1760000))
     for path in sys.argv[2:]:
         if len(shown) >= len(offered):
             break

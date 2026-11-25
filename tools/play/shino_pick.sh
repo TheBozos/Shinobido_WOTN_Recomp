@@ -4,10 +4,10 @@
 # RAM dumps: the list as it opens, then one per Down past the fourth row (only the rows shown have their titles in
 # memory: each step shows one more row, its title the new string).
 cd /d/Shinobido_WOTN_Recomp
-S=$1; F=$2; L=$((F+610))
+S=$1; F=$2; L=$((F+700))  # the list's four first rows all written by then
 DUMPS=$L
-for k in $(seq 4 12); do DUMPS="$DUMPS,$((L+40+50*(k-1)+40))"; done
-LAST=$((L+40+50*11+40))
+for k in $(seq 4 12); do DUMPS="$DUMPS,$((L+40+50*(k-1)+45))"; done
+LAST=$((L+40+50*11+45))
 python -c "
 F=$F; L=$L; ev=[]; f=F+20
 for b in ('CROSS','TRIANGLE','TRIANGLE','TRIANGLE','CROSS','CROSS'):
