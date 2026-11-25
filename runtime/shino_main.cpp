@@ -335,6 +335,8 @@ int main(int argc, char **argv)
                 char word[8] = {};
                 if (std::sscanf(p, "%llu:%f,%f,%f", &at, &v[0], &v[1], &v[2]) == 4 && at == f)
                     shino::cheats::teleportTo(v[0], v[1], v[2]);
+                else if (float w[4]; std::sscanf(p, "%llu:fly%f,%f,%f,%f", &at, &w[0], &w[1], &w[2], &w[3]) >= 4 && at == f)
+                    shino::cheats::flyTo(w[0], w[1], w[2], std::sscanf(p, "%llu:fly%f,%f,%f,%f", &at, &w[0], &w[1], &w[2], &w[3]) == 5 ? w[3] : 0.2f);
                 else if (int n = std::sscanf(p, "%llu:walk%f,%f,%f", &at, &v[0], &v[1], &v[2]); n >= 3 && at == f)
                     shino::cheats::walkTo(v[0], v[1], n == 4 ? v[2] : 0.2f);
                 else if (int index; std::sscanf(p, "%llu:char%d", &at, &index) == 2 && at == f)
@@ -349,6 +351,32 @@ int main(int argc, char **argv)
                         shino::cheats::teleportToEnemy();
                     else if (std::strcmp(word, "done") == 0)
                         shino::cheats::completeMission();
+                }
+                p = std::strchr(p, ';');
+                if (p)
+                    ++p;
+            }
+        // SHINO_POKE_AT=<frame>:<hex address>=<float>[,<float>...][;...]: floats written there at that frame (tests:
+        // an object moved by hand), repeated every frame up to <frame>+<n> with <frame>+<n>:... (one entry a frame)
+        if (static const char *e = std::getenv("SHINO_POKE_AT"); e)
+            for (const char *p = e; p && *p;)
+            {
+                unsigned long long at;
+                unsigned address;
+                int used = 0;
+                if (std::sscanf(p, "%llu:%x=%n", &at, &address, &used) == 2 && used > 0 && at == f && address < 0x2000000u)
+                {
+                    const char *q = p + used;
+                    uint8_t *ram = d.runtime().memory.ram();
+                    for (uint32_t k = 0; q && *q && *q != ';' && address + 4 * k + 4 <= 0x2000000u; ++k)
+                    {
+                        const float v = std::strtof(q, nullptr);
+                        std::memcpy(ram + address + 4 * k, &v, 4);
+                        q = std::strpbrk(q, ",;");
+                        if (!q || *q == ';')
+                            break;
+                        ++q;
+                    }
                 }
                 p = std::strchr(p, ';');
                 if (p)

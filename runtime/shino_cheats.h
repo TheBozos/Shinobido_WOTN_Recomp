@@ -36,6 +36,8 @@ namespace shino::cheats
     // A walk: each frame the ninja is moved `step` units toward the next waypoint (x, z) and turned to face it, his
     // height left to the game (he keeps what he carries, as when he walks). Waypoints are queued.
     void walkTo(float x, float z, float step);
+    // The same through the air: x, y and z moved together (y not left to the game).
+    void flyTo(float x, float y, float z, float step);
     void savePosition(int slot);
     bool hasSavedPosition(int slot);
     void loadPosition(int slot);

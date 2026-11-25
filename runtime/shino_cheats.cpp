@@ -68,6 +68,8 @@ namespace shino::cheats
         struct Waypoint
         {
             float x, z, step;
+            bool fly = false;
+            float y = 0;
         };
         std::vector<Waypoint> g_walk;
         float g_enemyFacing[2] = {0, 1};
@@ -269,6 +271,11 @@ namespace shino::cheats
         std::lock_guard<std::mutex> lock(g_lock);
         g_walk.push_back({x, z, step > 0 ? step : 0.2f});
     }
+    void flyTo(float x, float y, float z, float step)
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        g_walk.push_back({x, z, step > 0 ? step : 0.2f, true, y});
+    }
     void teleportBy(float forward, float up)
     {
         std::lock_guard<std::mutex> lock(g_lock);
@@ -406,21 +413,41 @@ namespace shino::cheats
         {
             const Waypoint w = g_walk.front();
             const float x = readF(ram, object + kPosition), z = readF(ram, object + kPosition + 8);
-            float dx = w.x - x, dz = w.z - z;
-            const float length = std::sqrt(dx * dx + dz * dz);
+            // SHINO_WALK_SINK=<units a frame>: off a ledge he comes down no faster than that (as down a slope)
+            static const float sink = std::getenv("SHINO_WALK_SINK") ? static_cast<float>(std::atof(std::getenv("SHINO_WALK_SINK"))) : 0.0f;
+            static float lastY = 0.0f;
+            static bool haveY = false;
+            if (sink > 0.0f)
+            {
+                const float y = readF(ram, object + kPosition + 4);
+                if (haveY && y < lastY - sink)
+                    writeF(ram, object + kPosition + 4, lastY - sink);
+                lastY = haveY && y < lastY - sink ? lastY - sink : y;
+                haveY = true;
+            }
+            const float y0 = readF(ram, object + kPosition + 4);
+            float dx = w.x - x, dz = w.z - z, dy = w.fly ? w.y - y0 : 0.0f;
+            const float length = std::sqrt(dx * dx + dz * dz + dy * dy);
             if (length <= w.step)
             {
                 writeF(ram, object + kPosition, w.x);
                 writeF(ram, object + kPosition + 8, w.z);
+                if (w.fly)
+                    writeF(ram, object + kPosition + 4, w.y);
                 g_walk.erase(g_walk.begin());
                 if (g_walk.empty())
                     setStatus("Walk over.");
             }
             else
             {
-                dx /= length, dz /= length;
+                dx /= length, dz /= length, dy /= length;
                 writeF(ram, object + kPosition, x + dx * w.step);
                 writeF(ram, object + kPosition + 8, z + dz * w.step);
+                if (w.fly)
+                    writeF(ram, object + kPosition + 4, y0 + dy * w.step);
+                const float h = std::sqrt(dx * dx + dz * dz);
+                if (h > 1e-4f)
+                    dx /= h, dz /= h;
                 const float rows[3][3] = {{dz, 0, -dx}, {0, 1, 0}, {dx, 0, dz}};
                 for (uint32_t r = 0; r < 3; ++r)
                     for (uint32_t k = 0; k < 3; ++k)
@@ -550,6 +577,18 @@ namespace shino::cheats
                 std::printf("[shino:cheats]  %.*s\n", rosterAt, roster);
         }
         s_items = g_item.count;
+        // SHINO_TRACE_PLAYER=<n>: the ninja's position every n frames (and the mission's carrier: 0 none)
+        if (static const int every = std::getenv("SHINO_TRACE_PLAYER") ? std::atoi(std::getenv("SHINO_TRACE_PLAYER")) : 0; every > 0)
+        {
+            static int frame = 0;
+            if (++frame % every == 0)
+            {
+                const uint32_t mission = read32(ram, kMissionPointer);
+                const uint32_t carrier = mission >= 0x100000u && mission < 0x2000000u - 0x1000u ? read32(ram, mission + kCarry + 4) : 0;
+                std::printf("[shino:player] %.1f %.1f %.1f carrier %x motion %u%c", readF(ram, object + kPosition), readF(ram, object + kPosition + 4),
+                            readF(ram, object + kPosition + 8), carrier, read32(ram, 0x6711b4u), 10);
+            }
+        }
         Player &p = g_player;
         p.valid = true;
         p.x = readF(ram, object + kPosition);
