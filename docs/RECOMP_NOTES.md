@@ -637,6 +637,34 @@ Status) a Let's Play's story had ended at about day 89, so the path this chain t
 betrayed, objectives met by cheats) has left the main story somewhere it does not finish, or its next step is in a
 letter or a choice the driver does not make. Still to understand: what the story's last missions need.
 
+### What moves the story: soul fragments (2026-11-25)
+
+The story advances by soul fragments, eight of them (Etc shelf: "Soul Fragment 1".."8"); Check Status's hint is the
+stage (the game's Condition0..11 texts: stage 2, "What could have happened in my past...?", holds until the third
+fragment). The lords help find them only with respect ("The lords will only help you with information about the soul
+fragments if they have respect for you"; Onji: "just pick one and work hard for them"). The ~200-day chain above stayed
+at stage 2 for good: it served lords at random.
+- Respect: Ichijo's, Akame's, Sadame's percent at `0x6264e8`, `0x6265a8`, `0x626668` (int). The day's offers: +0x1c
+  the client, +0x20 the target (0 Ichijo, 1 Akame, 2 Sadame, other: none).
+- Replay serving Ichijo from day 9 (`build/i11.state`; `LORD=0 LETTERS=1 PREFIX=i PICK_MODE=auto shino_chain.sh`):
+  Ichijo at 100% by day 30, his letters and scenes ("Rumours of a surviving Asuka Ninja", a bow, the first special
+  move), Sadame and Akame's men dying; then "The whereabouts of one of the shining stones" letters (the Mosu, the
+  Kenobi, barbarians have one).
+- Rival ninja: after some missions "I sense danger... This might be the end for me... Continue anyway?" (the flow's
+  states 13, then 14 while shown; the cursor on No). `SHINO_ANSWER_DANGER=1` (the runner's pad assist) answers Yes: a
+  Mosu scene ("I'm not laughing, Usuba.", "Leave! I have no reason to kill you.", "We know what you are!"). The
+  "A chance to dispose of the Mosu ninja" missions kill Mosu (120 health) without giving a fragment.
+- The third fragment's mission, "A glowing stone in Dandala Peak" (Ichijo, 73 Mon, type 16): a barbarian chief (320
+  health) on a cliff top at (210, 468, 298) guards a chest with a purple glow (`item/Itm_kakera_01`; the scripts'
+  `DropKakera`). Beside it, facing it, Triangle lifts it (the mission's carrier, +0x440 +4, is then the ninja). The
+  exit is the tunnel at the start (-24, -17, -11): walking in ends the mission ("Return to your hideout?", event 24,
+  "Mission Complete!") with or without the chest, and gives no fragment; the mission is offered again. A teleport
+  leaves the chest behind (the carry stays set, its model does not move); a walk (`<frame>:walk<x>,<z>[,<step>]` in
+  `SHINO_TELEPORT_AT`, the ninja moved a little each frame, his height left to the game) carries it down the first
+  slope but drops it at the next ledge. Not found yet: how the chest is meant to reach the exit (or open), and where
+  the chest object keeps its position. The Let's Play's "Do we mail the stone to Sadame, or do we grab it right
+  away?" suggests a delivery prompt that keeps the fragment.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is

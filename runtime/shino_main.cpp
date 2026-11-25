@@ -325,7 +325,8 @@ int main(int argc, char **argv)
             }
         // SHINO_TELEPORT_AT=<frame>:<x>,<y>,<z>[;...]: teleports at those frames (play tests: a place to look at);
         // <frame>:goal, <frame>:item, <frame>:enemy teleport to those places of the mission, <frame>:char<n> behind the
-        // character table's entry n, <frame>:done marks the mission completed (shino_cheats.h).
+        // character table's entry n, <frame>:done marks the mission completed, <frame>:walk<x>,<z>[,<step>] queues a
+        // walk to (x, z), step units a frame (shino_cheats.h).
         if (static const char *e = std::getenv("SHINO_TELEPORT_AT"); e)
             for (const char *p = e; p && *p;)
             {
@@ -334,6 +335,8 @@ int main(int argc, char **argv)
                 char word[8] = {};
                 if (std::sscanf(p, "%llu:%f,%f,%f", &at, &v[0], &v[1], &v[2]) == 4 && at == f)
                     shino::cheats::teleportTo(v[0], v[1], v[2]);
+                else if (int n = std::sscanf(p, "%llu:walk%f,%f,%f", &at, &v[0], &v[1], &v[2]); n >= 3 && at == f)
+                    shino::cheats::walkTo(v[0], v[1], n == 4 ? v[2] : 0.2f);
                 else if (int index; std::sscanf(p, "%llu:char%d", &at, &index) == 2 && at == f)
                     shino::cheats::teleportToCharacter(index);
                 else if (std::sscanf(p, "%llu:%5[a-z]", &at, word) == 2 && at == f)

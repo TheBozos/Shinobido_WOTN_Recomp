@@ -33,6 +33,9 @@ namespace shino::cheats
     constexpr int kSlots = 4;
     void teleportTo(float x, float y, float z);
     void teleportBy(float forward, float up);
+    // A walk: each frame the ninja is moved `step` units toward the next waypoint (x, z) and turned to face it, his
+    // height left to the game (he keeps what he carries, as when he walks). Waypoints are queued.
+    void walkTo(float x, float z, float step);
     void savePosition(int slot);
     bool hasSavedPosition(int slot);
     void loadPosition(int slot);

@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 namespace shino::cheats
 {
@@ -64,6 +65,11 @@ namespace shino::cheats
         Player g_player;
         Player g_slots[kSlots];
         Place g_goal, g_item, g_enemy;
+        struct Waypoint
+        {
+            float x, z, step;
+        };
+        std::vector<Waypoint> g_walk;
         float g_enemyFacing[2] = {0, 1};
         constexpr uint32_t kMissionPointer = 0x625c5c; // gp-0x6b14
         constexpr uint32_t kCarry = 0x440, kGoalMarkers = 0x88, kMarkerPosition = 0xc0;
@@ -258,6 +264,11 @@ namespace shino::cheats
         std::lock_guard<std::mutex> lock(g_lock);
         g_request = {Kind::To, x, y, z};
     }
+    void walkTo(float x, float z, float step)
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        g_walk.push_back({x, z, step > 0 ? step : 0.2f});
+    }
     void teleportBy(float forward, float up)
     {
         std::lock_guard<std::mutex> lock(g_lock);
@@ -358,14 +369,15 @@ namespace shino::cheats
         g_item = findItem(ram, here);
         g_enemy = {};
         float enemyD = 0;
-        char roster[1024];
+        char roster[2048];
         int rosterAt = 0;
         forEachEnemy(ram, object, [&](uint32_t guard, uint32_t healthAt) {
             ++enemies;
             const int32_t health = static_cast<int32_t>(read32(ram, healthAt));
-            if (rosterAt < static_cast<int>(sizeof roster) - 40) // SHINO_TRACE_ENEMIES=2: each one (object, health / max)
-                rosterAt += std::snprintf(roster + rosterAt, sizeof roster - rosterAt, " %x:%d/%d", guard, health,
-                                          static_cast<int32_t>(read32(ram, healthAt + 4)));
+            if (rosterAt < static_cast<int>(sizeof roster) - 64) // SHINO_TRACE_ENEMIES=2: each one (object, health / max)
+                rosterAt += std::snprintf(roster + rosterAt, sizeof roster - rosterAt, " %x:%d/%d@%.0f,%.0f,%.0f", guard, health,
+                                          static_cast<int32_t>(read32(ram, healthAt + 4)), readF(ram, guard + kPosition),
+                                          readF(ram, guard + kPosition + 4), readF(ram, guard + kPosition + 8));
             // SHINO_KILL_SPARE=<max health>: the enemies with that much (a rival ninja: the Mosu have 120) are left alone
             static const int spare = std::getenv("SHINO_KILL_SPARE") ? std::atoi(std::getenv("SHINO_KILL_SPARE")) : 0;
             if (spare && static_cast<int32_t>(read32(ram, healthAt + 4)) == spare)
@@ -390,6 +402,31 @@ namespace shino::cheats
                 std::memcpy(ram + healthAt, &one, 4);
             }
         });
+        if (!g_walk.empty())
+        {
+            const Waypoint w = g_walk.front();
+            const float x = readF(ram, object + kPosition), z = readF(ram, object + kPosition + 8);
+            float dx = w.x - x, dz = w.z - z;
+            const float length = std::sqrt(dx * dx + dz * dz);
+            if (length <= w.step)
+            {
+                writeF(ram, object + kPosition, w.x);
+                writeF(ram, object + kPosition + 8, w.z);
+                g_walk.erase(g_walk.begin());
+                if (g_walk.empty())
+                    setStatus("Walk over.");
+            }
+            else
+            {
+                dx /= length, dz /= length;
+                writeF(ram, object + kPosition, x + dx * w.step);
+                writeF(ram, object + kPosition + 8, z + dz * w.step);
+                const float rows[3][3] = {{dz, 0, -dx}, {0, 1, 0}, {dx, 0, dz}};
+                for (uint32_t r = 0; r < 3; ++r)
+                    for (uint32_t k = 0; k < 3; ++k)
+                        writeF(ram, object + kMatrix + 16 * r + 4 * k, rows[r][k]);
+            }
+        }
         if (g_request.kind != Kind::None)
         {
             float to[3] = {0, 0, 0};
