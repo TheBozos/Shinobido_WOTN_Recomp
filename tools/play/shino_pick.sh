@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # pick.sh <state> <frame>: the day's offered missions and titles read at the list screen (tools/play/shino_pick_read.py);
 # prints the chosen k (1-based, after News), the offers and the titles; "0" when none is offered.
-# RAM dumps: the list as it opens, then one per Down past the fourth row (only the rows shown have their titles in
-# memory: each step shows one more row, its title the new string).
+# Only the rows on screen have their titles in memory, so: one RAM dump as the list opens, then one after each of 12
+# Downs and 12 Ups (each scroll step draws one new row, whose title is the string that changed).
 cd /d/Shinobido_WOTN_Recomp
-S=$1; F=$2; L=$((F+700))  # the list's four first rows all written by then
+S=$1; F=$2; L=$((F+700))
 DUMPS=$L
-for k in $(seq 4 12); do DUMPS="$DUMPS,$((L+40+50*(k-1)+45))"; done
-LAST=$((L+40+50*11+45))
+for k in $(seq 1 24); do DUMPS="$DUMPS,$((L+50*k+40))"; done
+LAST=$((L+50*24+40))
 python -c "
 F=$F; L=$L; ev=[]; f=F+20
 for b in ('CROSS','TRIANGLE','TRIANGLE','TRIANGLE','CROSS','CROSS'):
     ev.append(f'{f}:{b}/4'); f+=100
-f=L+40
-for i in range(12): ev.append(f'{f}:DOWN/4'); f+=50
+for k in range(1,25): ev.append(f'{L+50*k}:{\"DOWN\" if k<=12 else \"UP\"}/4')
 open('build/cyc/pick_pad.txt','w').write(','.join(ev))"
 SHINO_DUMP_RAM_AT=$DUMPS timeout 1500 build/bozo/shino-headless.exe --card-dir build/cards_test2 --load-state "$S" \
   --pad-script build/cyc/pick_pad.txt --frames $((LAST+2)) > /dev/null 2>&1

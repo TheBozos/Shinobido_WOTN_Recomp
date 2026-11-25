@@ -43,43 +43,44 @@ for m in re.finditer(re.escape(news), ram):
             else:
                 merged.append(x)
         titles = merged[:len(offered)]
-# Past the first four rows: only the rows shown have their titles in memory, so a second dump with the list scrolled
-# to its end (pick.sh) gives the rest: the list's row strings (0x1700000..0x1800000) not seen in the first, in address
-# order (rows are written in turn), mission-type names left out.
+# The rows on screen, in order: each title is a text object (its string pointer, and 0x30 before it its widget) whose
+# widget holds the row's place (+0x6c x: -206 for a title; +0x70 y: -80, -16, 48, 112 for the four rows shown). Only
+# the rows on screen exist, so pick.sh dumps after each of 12 Downs: each scroll step shifts the four by one (the
+# selected row moves up 30 with its type label below it; the order holds).
 TYPES = {'Total Destruction', 'Assassination', 'Assault', 'Escort', 'Guard', 'Duel', 'Rescue', 'Robbery', 'Thievery',
          'Transport', 'Reconnaissance', 'Collection', 'Kidnapping', 'Hunting', 'News'}
-def row_titles(dump, lo=0x1760000, hi=0x1780000):
-    """The list rows' title strings (16-byte aligned, lo..hi), mission types left out, in address order."""
-    out = []
-    for m in re.finditer(rb'(?:[\x20-\x7e]\x00){8,}\x00\x00', dump[lo:hi]):
-        if m.start() % 0x10:
-            continue
+
+
+def window(dump):
+    """The titles on screen, top to bottom (x -206, sorted by y; type labels left out)."""
+    import numpy as np
+    words = np.frombuffer(dump, dtype=np.uint32)
+    rows = {}
+    for m in re.finditer(rb'(?:[\x20-\x7e]\x00){4,}\x00\x00', dump[0x1700000:0x1780000]):
+        a = 0x1700000 + m.start()
         t = m.group()[:-2].decode('utf-16-le').strip()
-        if re.match(r"[A-Z][A-Za-z' ,!?-]+$", t) and t not in TYPES and len(t) < 60 and t not in out:
-            out.append(t)
-    return out
+        if t in TYPES:
+            continue
+        for i in np.where(words == a)[0]:
+            parent = int(words[i - 12]) if i >= 12 else 0
+            if not 0x100000 <= parent < 0x1fffff0:
+                continue
+            x, y = struct.unpack_from('<2f', dump, parent + 0x6c)
+            if x == -206.0 and -400.0 < y < 400.0:
+                rows[t] = y
+    return sorted(rows, key=rows.get)
 
 
-if len(sys.argv) > 2 and len([t for t in titles if t]) < len(offered):
-    shown = [t for t in titles if t]
-    # the first view's other rows (the "News" block can stop short): strings at 0x1740000..0x1760000, in order
-    for t in row_titles(ram, 0x1740000, 0x1760000):
-        if len(shown) >= min(4, len(offered)):
-            break
-        if t not in shown:
-            shown.append(t)
-    seen = set(shown) | set(row_titles(ram)) | set(row_titles(ram, 0x1740000, 0x1760000))
-    for path in sys.argv[2:]:
-        if len(shown) >= len(offered):
-            break
-        new = []
-        for t in row_titles(open(path, 'rb').read()):
-            if t not in seen and t not in new:
-                new.append(t)
-        if len(new) == 1:  # one row scrolled in: its title
-            shown.append(new[0])
-        seen.update(new)
-    titles = shown
+if len(sys.argv) > 1:
+    seq = window(ram)
+    for path in sys.argv[2:14]:  # the Downs: each view overlaps the last; its new rows go on the end
+        w = window(open(path, 'rb').read())
+        for k in range(min(len(seq), len(w)), 0, -1):
+            if seq[-k:] == w[:k]:
+                seq += w[k:]
+                break
+    if seq:
+        titles = seq[:len(offered)]
 titles += [''] * (len(offered) - len(titles))
 
 def mode(title):
@@ -119,7 +120,7 @@ else:
         # challenge from Usuba": the Mosu have one); taken even against the lord (unseen, he does not find out). ("A
         # chance to dispose of the Mosu ninja" kills Mosu but gives no fragment.)
         fragment = bool(re.search(r'(?i)fragment|soul|glowing stone|hidden stone|stone that|the jewel|usuba|ageha|'
-                                  r'hebitonbo|kabuto|zaji|challenge|threatening letter|shadow of the mosu|whale|'
+                                  r'hebitonbo|kabuto|zaji|challenge from|threatening letter|shadow of the mosu|whale|'
                                   r'find your body|final enemy|gamuran|is hiding something|treasure', titles[i]))
         if not titles[i]:
             # below the list's first lines (only the visible titles are in memory): the lord's best paid, against
