@@ -130,9 +130,11 @@ else:
         if target == lord and not fragment:
             return None
         doable = mode(titles[i]) is not None
-        return (fragment, doable and flag == 2, doable, client == lord, reward)
+        story = bool(re.search(r'(?i)threatening letter|shadow of the mosu|whale|find your body|final enemy|gamuran|'
+                               r'glowing stone|stone that|is hiding something|treasure', titles[i]))
+        return (story, fragment, doable and flag == 2, doable, client == lord, reward)
     scores = [(score(i), i) for i in range(len(offered)) if score(i) is not None]
-    k = max(scores)[1] if scores and (max(scores)[0][0] or max(scores)[0][2]) else -1
+    k = max(scores)[1] if scores and (max(scores)[0][0] or max(scores)[0][1] or max(scores)[0][3]) else -1
 title = titles[k] if k >= 0 else ''
 how = (mode(title) if title else 'mixed') if k >= 0 else 'done'
 print(k + 1, how or 'done', *[f'{r}:{c}>{t}:{f}' for r, c, t, f in offered], '|',
