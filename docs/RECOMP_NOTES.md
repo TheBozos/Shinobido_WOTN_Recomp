@@ -622,6 +622,21 @@ document", "Too many barbarians", "Finally, the samurai general's head", "Delive
 "Defeat Yoshizo Iiyama, Sadame's samurai general", "Attack Sadame's starving troops", merchants and bear hunts...),
 the Kenobi ninja clan's scenes, three garden defenses; 5,060 to 22,791 Mon; no fault.
 
+Then on to day ~125 (`build/h230.state`, frame 1,650,550, 101,132 Mon): about 200 days of the chain in all, every
+level, scene, rating and load without a fault. `tools/play/shino_pick.sh` chooses each day's mission from memory: the
+offers are the static table at `0x6271dc` (0xa4 a mission: +0 the reward, -0x14 the client, -0x10 1 or 2 while
+offered, 2 for a marked one; the offers first, in the list's order) and the titles are UTF-16 after "News" in the
+list's text. It takes a marked mission, else a lord's own death (Kill / Defeat / Assassinate a lord), else the best
+paid; the `mixed` mode runs the kill loop before the completion cheat, so a target really dies (a cheat-completed
+assassination leaves him alive: Ichijo was "assassinated" twice, the second time for real, "I've done what I had to
+do"). Along the way: Sadame dead ("Death" on his status page), Ichijo assassinated, trust at 0% with both lords and
+Akame's at -25% ("foolish enough to betray me"), the Mosu and Kenobi clans' scenes, Akame's betrayal scene ("Crow
+dared to betray me?! Cut off his head!"), which plays when its letter is opened: the story's scenes are in the
+Letters (Mission Scroll, Letters), which the chain never opens. The game's ending was not reached: by day 94 (Check
+Status) a Let's Play's story had ended at about day 89, so the path this chain took (random lords served and
+betrayed, objectives met by cheats) has left the main story somewhere it does not finish, or its next step is in a
+letter or a choice the driver does not make. Still to understand: what the story's last missions need.
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
