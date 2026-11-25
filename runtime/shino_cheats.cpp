@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <vector>
 
@@ -72,6 +73,19 @@ namespace shino::cheats
             float y = 0;
         };
         std::vector<Waypoint> g_walk;
+        uint64_t g_frame = 0; // the game frame (setFrame), for the timed options
+        // A spared leader's death (SHINO_KILL_SPARE): the ninja is put where it fell and Grab pressed (grabWanted) until
+        // this frame: the soul fragment a rival clan's leader drops is taken "real quick" or lost.
+        uint64_t g_grabUntil = 0;
+        bool g_othersSeen = false;
+        int g_othersAlive = 1, g_othersCount = 0; // the enemies alive that are not spared leaders (last frame's count)
+        struct Leader
+        {
+            int32_t health = 0;
+            float at[3] = {0, 0, 0};
+            uint64_t seen = 0;
+        };
+        std::map<uint32_t, Leader> g_leaders;
         float g_enemyFacing[2] = {0, 1};
         constexpr uint32_t kMissionPointer = 0x625c5c; // gp-0x6b14
         constexpr uint32_t kCarry = 0x440, kGoalMarkers = 0x88, kMarkerPosition = 0xc0;
@@ -368,6 +382,9 @@ namespace shino::cheats
         return g_status;
     }
 
+    void setFrame(uint64_t frame) { g_frame = frame; }
+    bool grabWanted(uint64_t frame) { return frame < g_grabUntil && (frame % 8) < 4; }
+
     void apply(uint8_t *ram)
     {
         static const bool once = [] { teleportFromEnvironment(); return true; }();
@@ -392,6 +409,10 @@ namespace shino::cheats
         g_item = findItem(ram, here);
         g_enemy = {};
         float enemyD = 0;
+        g_othersAlive = g_othersCount;
+        if (g_othersCount > 0)
+            g_othersSeen = true; // the mission's others were there: their end frees the leaders
+        g_othersCount = 0;
         char roster[2048];
         int rosterAt = 0;
         forEachEnemy(ram, object, [&](uint32_t guard, uint32_t healthAt) {
@@ -401,10 +422,32 @@ namespace shino::cheats
                 rosterAt += std::snprintf(roster + rosterAt, sizeof roster - rosterAt, " %x:%d/%d@%.0f,%.0f,%.0f", guard, health,
                                           static_cast<int32_t>(read32(ram, healthAt + 4)), readF(ram, guard + kPosition),
                                           readF(ram, guard + kPosition + 4), readF(ram, guard + kPosition + 8));
-            // SHINO_KILL_SPARE=<max health>: the enemies with that much (a rival ninja: the Mosu have 120) are left alone
-            static const int spare = std::getenv("SHINO_KILL_SPARE") ? std::atoi(std::getenv("SHINO_KILL_SPARE")) : 0;
+            // SHINO_KILL_SPARE=<max health>[@<frame>]: the enemies with that much (a rival ninja: the Mosu have 120) are
+            // left alone (up to that game frame: then they are the last ones, as a leader who drops a soul fragment)
+            static const char *spareEnv = std::getenv("SHINO_KILL_SPARE");
+            static const int spare = spareEnv ? std::atoi(spareEnv) : 0;
+            static const unsigned long long spareUntil =
+                spareEnv && std::strchr(spareEnv, '@') ? std::strtoull(std::strchr(spareEnv, '@') + 1, nullptr, 10) : ~0ull;
             if (spare && static_cast<int32_t>(read32(ram, healthAt + 4)) == spare)
-                return;
+            {
+                Leader &l = g_leaders[guard];
+                if (l.health > 0 && health <= 0 && l.seen + 1 == g_frame) // fell this frame
+                {
+                    g_request = {Kind::To, readF(ram, guard + kPosition), readF(ram, guard + kPosition + 4) + 0.5f,
+                                 readF(ram, guard + kPosition + 8)};
+                    g_grabUntil = g_frame + 120;
+                    std::printf("[shino:cheats] leader %x fell at frame %llu: grabbing%c", guard, (unsigned long long)g_frame, 10);
+                }
+                l.health = health;
+                l.seen = g_frame;
+                for (uint32_t k = 0; k < 3; ++k)
+                    l.at[k] = readF(ram, guard + kPosition + 4 * k);
+                // spared while the others live (then they are the last two, as the story wants) or up to @frame
+                if ((g_othersAlive > 0 || !g_othersSeen) && g_frame < spareUntil)
+                    return;
+            }
+            if (health > 0 && !(spare && static_cast<int32_t>(read32(ram, healthAt + 4)) == spare))
+                ++g_othersCount;
             if (health > 0)
             {
                 ++alive;
@@ -469,6 +512,21 @@ namespace shino::cheats
                     for (uint32_t k = 0; k < 3; ++k)
                         writeF(ram, object + kMatrix + 16 * r + 4 * k, rows[r][k]);
             }
+        }
+        for (auto it = g_leaders.begin(); it != g_leaders.end();)
+        {
+            const Leader &l = it->second;
+            if (l.seen + 1 == g_frame && l.health > 0) // alive last frame, gone now: cut down (or fled)
+            {
+                g_request = {Kind::To, l.at[0], l.at[1] + 0.5f, l.at[2]};
+                g_grabUntil = g_frame + 120;
+                std::printf("[shino:cheats] leader %x gone at frame %llu (%.0f, %.0f, %.0f): grabbing%c", it->first,
+                            (unsigned long long)g_frame, l.at[0], l.at[1], l.at[2], 10);
+            }
+            if (l.seen != g_frame)
+                it = g_leaders.erase(it);
+            else
+                ++it;
         }
         if (g_request.kind != Kind::None)
         {

@@ -40,6 +40,11 @@ namespace
                 inner_->read(frame, player, out);
             if (player != 0)
                 return;
+            if (shino::cheats::grabWanted(frame))
+            {
+                out.buttons = bozo::libs::kPadTriangle;
+                return;
+            }
             const uint32_t state = shino::missionFlowState();
             if (state == 13 && phase_ == Phase::Idle)
             {
@@ -384,6 +389,7 @@ int main(int argc, char **argv)
                 if (p)
                     ++p;
             }
+        shino::cheats::setFrame(f);
         shino::cheats::apply(d.runtime().memory.ram()); // the frame boundary: the game thread
         pacer.frameEnd();
         shino::traceSound(f);

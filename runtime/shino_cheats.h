@@ -75,6 +75,10 @@ namespace shino::cheats
 
     // Once a frame, on the game thread (the frame boundary): the enabled cheats' writes, the teleport asked for.
     void apply(uint8_t *ram);
+    // The game frame, given each frame before apply (timed options such as SHINO_KILL_SPARE's @frame).
+    void setFrame(uint64_t frame);
+    // Grab (Triangle) wanted at this frame: a spared leader just fell (its soul fragment).
+    bool grabWanted(uint64_t frame);
     // The window's Cheats tab (only in the window build).
     void registerMenu();
 } // namespace shino::cheats
