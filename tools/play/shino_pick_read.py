@@ -48,6 +48,8 @@ titles += [''] * (len(offered) - len(titles))
 def mode(title):
     """The way to play a mission, from its title (PICK_MODE=auto): None for one the drivers cannot finish."""
     t = title.lower()
+    if re.search(r'threatening letter|whale|find your body|final enemy|gamuran', t):
+        return 'mixed'  # the story's own missions (GameFAQs, serenitychan: "Key Mission Titles To Look For")
     if re.search(r'mosu|usuba|ageha|kenobi|hebitonbo|taraba|kabuto|zaji|challenge', t):
         return 'mixed'  # a rival ninja (the Mosu have the third soul fragment): the kill loop
     if re.search(r'fragment|glowing stone|hidden stone|stone that|the jewel', t):
@@ -80,7 +82,8 @@ else:
         # challenge from Usuba": the Mosu have one); taken even against the lord (unseen, he does not find out). ("A
         # chance to dispose of the Mosu ninja" kills Mosu but gives no fragment.)
         fragment = bool(re.search(r'(?i)fragment|soul|glowing stone|hidden stone|stone that|the jewel|usuba|ageha|'
-                                  r'hebitonbo|kabuto|zaji|challenge', titles[i]))
+                                  r'hebitonbo|kabuto|zaji|challenge|threatening letter|shadow of the mosu|whale|'
+                                  r'find your body|final enemy|gamuran|is hiding something|treasure', titles[i]))
         if not titles[i]:
             # below the list's first lines (only the visible titles are in memory): the lord's best paid, against
             # another lord, is most likely a lord's or a samurai general's death ("Kill Sadame": 2,578 Mon)

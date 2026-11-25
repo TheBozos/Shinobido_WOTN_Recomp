@@ -99,13 +99,28 @@ namespace shino::cheats
         }
         void writeF(uint8_t *ram, uint32_t a, float v) { std::memcpy(ram + (a & 0x1FFFFFFu), &v, 4); }
 
+        // Where a character's health is (its max 4 bytes after): +0x64c, else the status block's +0x1c; 0: neither.
+        uint32_t healthAt(const uint8_t *ram, uint32_t object)
+        {
+            const auto valid = [&](uint32_t a) {
+                const int32_t health = static_cast<int32_t>(read32(ram, a)), max = static_cast<int32_t>(read32(ram, a + 4));
+                return max > 0 && max <= 100000 && health >= 0 && health <= max;
+            };
+            if (valid(object + kHealth))
+                return object + kHealth;
+            const uint32_t block = read32(ram, object + 0x45c);
+            if (block >= 0x100000u && block < 0x2000000u - 0x40u && read32(ram, block) == object && valid(block + 0x1c))
+                return block + 0x1c;
+            return 0;
+        }
+
         bool isPlayer(const uint8_t *ram, uint32_t object)
         {
             if (object < 0x100000u || object >= 0x2000000u - 0x1000u || read32(ram, object) != object)
                 return false;
-            const int32_t health = static_cast<int32_t>(read32(ram, object + kHealth));
-            const int32_t max = static_cast<int32_t>(read32(ram, object + kMaxHealth));
-            if (max <= 0 || max > 100000 || health < 0 || health > max)
+            // health at +0x64c, or (some phases, e.g. the Kabuto fight's second part) only in the status block
+            const uint32_t at = healthAt(ram, object);
+            if (!at)
                 return false;
             for (uint32_t k = 0; k < 3; ++k)
                 if (!std::isfinite(readF(ram, object + kPosition + 4 * k)))
@@ -366,7 +381,8 @@ namespace shino::cheats
             return;
         }
         if (enabled(Cheat::InfiniteHealth))
-            std::memcpy(ram + object + kHealth, ram + object + kMaxHealth, 4);
+            if (const uint32_t at = healthAt(ram, object))
+                std::memcpy(ram + at, ram + at + 4, 4);
         int enemies = 0, alive = 0;
         const bool kills = enabled(Cheat::OneHitKills);
         float here[3];
@@ -596,8 +612,8 @@ namespace shino::cheats
         p.z = readF(ram, object + kPosition + 8);
         p.fx = readF(ram, object + kFacing);
         p.fz = readF(ram, object + kFacing + 8);
-        p.health = static_cast<int32_t>(read32(ram, object + kHealth));
-        p.maxHealth = static_cast<int32_t>(read32(ram, object + kMaxHealth));
+        p.health = static_cast<int32_t>(read32(ram, healthAt(ram, object)));
+        p.maxHealth = static_cast<int32_t>(read32(ram, healthAt(ram, object) + 4));
         p.enemies = enemies;
         p.enemiesAlive = alive;
     }
