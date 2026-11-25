@@ -43,6 +43,37 @@ for m in re.finditer(re.escape(news), ram):
             else:
                 merged.append(x)
         titles = merged[:len(offered)]
+# Past the first four rows: only the rows shown have their titles in memory, so a second dump with the list scrolled
+# to its end (pick.sh) gives the rest: the list's row strings (0x1700000..0x1800000) not seen in the first, in address
+# order (rows are written in turn), mission-type names left out.
+TYPES = {'Total Destruction', 'Assassination', 'Assault', 'Escort', 'Guard', 'Duel', 'Rescue', 'Robbery', 'Thievery',
+         'Transport', 'Reconnaissance', 'Collection', 'Kidnapping', 'Hunting', 'News'}
+def row_titles(dump):
+    """The list rows' title strings (16-byte aligned, 0x1760000..0x1780000), mission types left out."""
+    out = []
+    for m in re.finditer(rb'(?:[\x20-\x7e]\x00){8,}\x00\x00', dump[0x1760000:0x1780000]):
+        if m.start() % 0x10:
+            continue
+        t = m.group()[:-2].decode('utf-16-le').strip()
+        if re.match(r"[A-Z][A-Za-z' ,!?-]+$", t) and t not in TYPES and len(t) < 60:
+            out.append(t)
+    return out
+
+
+if len(sys.argv) > 2 and len([t for t in titles if t]) < len(offered):
+    shown = [t for t in titles if t]
+    seen = set(shown) | set(row_titles(ram))
+    for path in sys.argv[2:]:
+        if len(shown) >= len(offered):
+            break
+        new = []
+        for t in row_titles(open(path, 'rb').read()):
+            if t not in seen and t not in new:
+                new.append(t)
+        if len(new) == 1:  # one row scrolled in: its title
+            shown.append(new[0])
+        seen.update(new)
+    titles = shown
 titles += [''] * (len(offered) - len(titles))
 
 def mode(title):

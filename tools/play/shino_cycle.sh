@@ -45,6 +45,13 @@ elif mode=="mixed": # the kill loop (a target really dies), then the completion 
     t=acc+1100+120*24
     tp+=[f"{t}:done",f"{t+600}:done"]
     spam=t+1100
+elif mode=="drop": # a rival clan holding a soul fragment: the kill loop, Grab after each kill (the leader drops it)
+    for i in range(30):
+        t=acc+1100+150*i; tp.append(f"{t}:enemy")
+        ev+=[f"{t+dd}:SQUARE/6" for dd in (15,35,55,75)]+[f"{t+dd}:TRIANGLE/4" for dd in (95,110,125,140)]
+    t=acc+1100+150*30
+    tp+=[f"{t}:done",f"{t+600}:done"]
+    spam=t+1100
 elif mode=="thief": # Thievery: beside the item, one Grab (a second drops it), then the nearest exit
     tp=[f"{acc+1300}:item",f"{acc+1900}:goal",f"{acc+2500}:goal"]
     ev.append(f"{acc+1400}:TRIANGLE/4")
