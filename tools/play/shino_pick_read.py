@@ -56,9 +56,9 @@ def window(dump):
     import numpy as np
     words = np.frombuffer(dump, dtype=np.uint32)
     rows = {}
-    for m in re.finditer(rb'(?:[\x20-\x7e]\x00){4,}\x00\x00', dump[0x1700000:0x1780000]):
+    for m in re.finditer(rb'(?:[\x20-\x7e]\x00|\n\x00){4,}\x00\x00', dump[0x1700000:0x1780000]):  # (two-line titles)
         a = 0x1700000 + m.start()
-        t = m.group()[:-2].decode('utf-16-le').strip()
+        t = ' '.join(m.group()[:-2].decode('utf-16-le').split())
         if t in TYPES:
             continue
         for i in np.where(words == a)[0]:
@@ -79,8 +79,11 @@ if len(sys.argv) > 1:
             if seq[-k:] == w[:k]:
                 seq += w[k:]
                 break
+    first = len(window(ram))
     if seq:
         titles = seq[:len(offered)]
+    if len(seq) != len(offered):  # a scroll step missed: only the first view's rows are sure of their place
+        titles = titles[:first]
 titles += [''] * (len(offered) - len(titles))
 
 def mode(title):
@@ -92,7 +95,7 @@ def mode(title):
         return 'mixed'  # a rival ninja (the Mosu have the third soul fragment): the kill loop
     if re.search(r'fragment|glowing stone|hidden stone|stone that|the jewel', t):
         return 'thief'  # a soul fragment: an item to take and carry out ("The stone that Akame is hiding")
-    if re.search(r'collect|can you eat|protect|guard|rescue|escort|kidnap|bring .* alive', t):
+    if re.search(r'collect|can you eat|protect|guard|rescue|escort|kidnap|bring .* alive|steal rice|steal the rice', t):
         return None  # collection: the cheat completes it with nothing to send ("Embezzler"); guard: the ward dies
     if re.search(r'\bkill\b|defeat|assassinate|execute|rub out|eliminate|\bhead\b|destroy|attack|wipe|slay|barbarian|misery|'
                  r'in secret|annihilate', t):
