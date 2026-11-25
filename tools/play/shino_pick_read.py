@@ -7,9 +7,10 @@ ram = open(sys.argv[1], 'rb').read()
 offered = []
 for i in range(40):
     a = 0x6271dc + 0xa4 * i
-    if struct.unpack_from('<i', ram, a - 0x10)[0] != 1:
+    flag = struct.unpack_from('<i', ram, a - 0x10)[0]
+    if flag not in (1, 2):
         break
-    offered.append((struct.unpack_from('<i', ram, a)[0], struct.unpack_from('<i', ram, a - 0x14)[0]))
+    offered.append((struct.unpack_from('<i', ram, a)[0], struct.unpack_from('<i', ram, a - 0x14)[0], flag))
 if not offered:
     print(0)
     sys.exit()
@@ -24,5 +25,6 @@ for m in re.finditer(re.escape(news), ram):
         titles = found[:len(offered)]
 lord = [i for i, t in enumerate(titles)
         if re.match(r"(Kill|Defeat|Assassinate|Execute) (Nobuteru |Hideyoshi )?(Ichijo|Sadame|Akame)$", t)]
-k = lord[0] if lord else max(range(len(offered)), key=lambda i: offered[i][0])
-print(k + 1, *[f'{r}:{c}' for r, c in offered], '|', ' / '.join(titles).encode('ascii', 'replace').decode())
+marked = [i for i, o in enumerate(offered) if o[2] == 2]  # flag 2: marked (the story's)
+k = marked[0] if marked else lord[0] if lord else max(range(len(offered)), key=lambda i: offered[i][0])
+print(k + 1, *[f'{r}:{c}:{f}' for r, c, f in offered], '|', ' / '.join(titles).encode('ascii', 'replace').decode())
