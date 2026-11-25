@@ -358,9 +358,18 @@ namespace shino::cheats
         g_item = findItem(ram, here);
         g_enemy = {};
         float enemyD = 0;
+        char roster[1024];
+        int rosterAt = 0;
         forEachEnemy(ram, object, [&](uint32_t guard, uint32_t healthAt) {
             ++enemies;
             const int32_t health = static_cast<int32_t>(read32(ram, healthAt));
+            if (rosterAt < static_cast<int>(sizeof roster) - 40) // SHINO_TRACE_ENEMIES=2: each one (object, health / max)
+                rosterAt += std::snprintf(roster + rosterAt, sizeof roster - rosterAt, " %x:%d/%d", guard, health,
+                                          static_cast<int32_t>(read32(ram, healthAt + 4)));
+            // SHINO_KILL_SPARE=<max health>: the enemies with that much (a rival ninja: the Mosu have 120) are left alone
+            static const int spare = std::getenv("SHINO_KILL_SPARE") ? std::atoi(std::getenv("SHINO_KILL_SPARE")) : 0;
+            if (spare && static_cast<int32_t>(read32(ram, healthAt + 4)) == spare)
+                return;
             if (health > 0)
             {
                 ++alive;
@@ -493,9 +502,17 @@ namespace shino::cheats
             g_request = {};
         }
         // SHINO_TRACE_ENEMIES=1: the enemies alive, each time it changes (play tests of the kill missions).
+        // (and the carriable items: a soul fragment a rival ninja drops is one)
+        static int s_items = -1;
         if (static const bool trace = fromEnvironment("SHINO_TRACE_ENEMIES"); trace && (alive != g_player.enemiesAlive ||
-                                                                                       enemies != g_player.enemies))
-            std::printf("[shino:cheats] enemies %d, %d alive\n", enemies, alive);
+                                                                                       enemies != g_player.enemies ||
+                                                                                       g_item.count != s_items))
+        {
+            std::printf("[shino:cheats] enemies %d, %d alive, items %d\n", enemies, alive, g_item.count);
+            if (static const bool each = std::getenv("SHINO_TRACE_ENEMIES")[0] == '2'; each)
+                std::printf("[shino:cheats]  %.*s\n", rosterAt, roster);
+        }
+        s_items = g_item.count;
         Player &p = g_player;
         p.valid = true;
         p.x = readF(ram, object + kPosition);

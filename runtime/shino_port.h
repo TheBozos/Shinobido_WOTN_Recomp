@@ -21,6 +21,9 @@ namespace shino
     void reportRender();
     // The frame-end wait's passes and skips (runtime/shino_port.cpp).
     void reportWait();
+    // The mission flow's state (0x180470's +0xc, runtime/shino_port.cpp): 1 in play, 12 over, 13 "I sense danger...
+    // Continue anyway?" (a rival ninja after the mission: the Mosu hold a soul fragment), 0 before any mission.
+    uint32_t missionFlowState();
     // A VIF0 source chain (TTE: its tags' VIF codes too), its codes read into the port's VU0 (vif::codes0).
     void vif0Chain(uint8_t *rdram, Runtime *rt, uint32_t tadr);
 

@@ -23,6 +23,81 @@
 #include "bozo/app/window.h"
 #endif
 
+namespace
+{
+    // SHINO_ANSWER_DANGER=1 (play drivers): after some missions a rival ninja comes ("I sense danger... This might be
+    // the end for me... Continue anyway?", the mission flow's states 13 then 14; the cursor starts on No). The assist answers
+    // Yes (Left, then Cross), then fights until the flow leaves play: every 120 frames a teleport just behind the
+    // nearest enemy and four Square presses. The script's own input is held back meanwhile.
+    class DangerAssist final : public bozo::libs::PadInput
+    {
+    public:
+        explicit DangerAssist(bozo::libs::PadInput *inner) : inner_(inner) {}
+
+        void read(uint32_t frame, int player, bozo::libs::PadInputState &out) override
+        {
+            if (inner_)
+                inner_->read(frame, player, out);
+            if (player != 0)
+                return;
+            const uint32_t state = shino::missionFlowState();
+            if (state == 13 && phase_ == Phase::Idle)
+            {
+                phase_ = Phase::Answer;
+                start_ = frame;
+            }
+            if (phase_ == Phase::Idle)
+                return;
+            const uint32_t at = frame - start_;
+            out.buttons = 0;
+            if (phase_ == Phase::Answer)
+            {
+                // the dialog is shown when the flow goes on to 14 (which stays through the rating): from then, Left
+                // twice (onto Yes), then Cross
+                if (state == 14 && shown_ == 0)
+                    shown_ = frame;
+                if (shown_ == 0)
+                {
+                    if (at > 600) // no dialog
+                        phase_ = Phase::Idle;
+                    return;
+                }
+                const uint32_t since = frame - shown_;
+                if ((since >= 30 && since < 36) || (since >= 60 && since < 66))
+                    out.buttons = bozo::libs::kPadLeft;
+                else if (since >= 90 && since < 96)
+                    out.buttons = bozo::libs::kPadCross;
+                else if (since >= 100)
+                {
+                    phase_ = Phase::Fight;
+                    start_ = frame;
+                    shown_ = 0;
+                    std::printf("[shino:assist] danger: Yes at frame %u, fighting\n", frame);
+                }
+                return;
+            }
+            // fighting: until the mission is over (12 complete or failed, or back at the hideout), or 9000 frames
+            if (state == 12 || state == 15 || state == 17 || state == 0 || at > 9000) // 17: the encounter's scene over
+            {
+                std::printf("[shino:assist] fight over at frame %u (state %u)\n", frame, state);
+                phase_ = Phase::Idle;
+                return;
+            }
+            const uint32_t step = at % 120;
+            if (step == 0)
+                shino::cheats::teleportToEnemy();
+            if ((step >= 15 && step < 21) || (step >= 35 && step < 41) || (step >= 55 && step < 61) || (step >= 75 && step < 81))
+                out.buttons = bozo::libs::kPadSquare;
+        }
+
+    private:
+        enum class Phase { Idle, Answer, Fight };
+        bozo::libs::PadInput *inner_;
+        Phase phase_ = Phase::Idle;
+        uint32_t start_ = 0, shown_ = 0;
+    };
+} // namespace
+
 int main(int argc, char **argv)
 {
     bozo::host::FreeOptions options;
@@ -295,6 +370,9 @@ int main(int argc, char **argv)
     if (window && options.padScript.empty())
         host.libraries().pad.input = &devices;
 #endif
+    DangerAssist dangerAssist(host.libraries().pad.input);
+    if (const char *e = std::getenv("SHINO_ANSWER_DANGER"); e && *e == '1')
+        host.libraries().pad.input = &dangerAssist;
     host.onAudio = [&](uint64_t, const int16_t *pcm, size_t count)
     {
         if (recording.isOpen())

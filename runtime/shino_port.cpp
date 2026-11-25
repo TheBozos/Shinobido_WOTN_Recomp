@@ -8,6 +8,7 @@
 #include "shino_port.h"
 #include "bozo/ee/dispatcher.h"
 #include "bozo/ee/kernel.h"
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,9 @@ namespace shino
         {
             uint64_t passes = 0, skips = 0, cycles = 0, withCallback = 0;
         } g_wait;
+
+        // The mission flow's last state (the native site 0x180484), read by the runner's pad assist.
+        std::atomic<uint32_t> g_missionFlowState{0};
 
         // 0x112d60(character, position, type, source): a character's event record (+0x3e4 the type, +0x3e8 the position
         // it is at, +0x3e0 the one it is about: the guards' "seen", type 17, among them), the game's three stores made
@@ -162,6 +166,7 @@ namespace shino
                                 ctx->r[5].uw[0], ctx->r[31].uw[0], (unsigned long long)bozo::port::vblankCount(rt), 10);
                 }
                 std::memcpy(rdram + at, &ctx->r[5].uw[0], 4);
+                g_missionFlowState.store(ctx->r[5].uw[0]);
                 return true;
             }
             // 0x326860, the movie player's vblank handler: CSR.FIELD (bit 13) picks the field's half offset.
@@ -184,6 +189,8 @@ namespace shino
             }
         }
     } // namespace
+
+    uint32_t missionFlowState() { return g_missionFlowState.load(); }
 
     void reportWait()
     {

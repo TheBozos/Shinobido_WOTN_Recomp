@@ -11,4 +11,4 @@ open('build/cyc/pick_pad.txt','w').write(','.join(ev))"
 SHINO_DUMP_RAM_AT=$L timeout 1500 build/bozo/shino-headless.exe --card-dir build/cards_test2 --load-state "$S" \
   --pad-script build/cyc/pick_pad.txt --frames $((L+2)) > /dev/null 2>&1
 PYTHONIOENCODING=utf-8 python tools/play/shino_pick_read.py "build/ram_$L.bin"
-rm -f "build/ram_$L.bin"
+[ -n "${KEEP:-}" ] || rm -f "build/ram_$L.bin"
