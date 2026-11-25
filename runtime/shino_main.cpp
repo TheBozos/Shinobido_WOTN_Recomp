@@ -88,6 +88,8 @@ namespace
                 shino::cheats::teleportToEnemy();
             if ((step >= 15 && step < 21) || (step >= 35 && step < 41) || (step >= 55 && step < 61) || (step >= 75 && step < 81))
                 out.buttons = bozo::libs::kPadSquare;
+            else if ((step >= 95 && step < 99) || (step >= 107 && step < 111)) // Grab: a soul fragment a leader drops
+                out.buttons = bozo::libs::kPadTriangle;
         }
 
     private:

@@ -664,6 +664,15 @@ at stage 2 for good: it served lords at random.
   slope but drops it at the next ledge. Not found yet: how the chest is meant to reach the exit (or open), and where
   the chest object keeps its position. The Let's Play's "Do we mail the stone to Sadame, or do we grab it right
   away?" suggests a delivery prompt that keeps the fragment.
+- Solved (a GameFAQs walkthrough, serenitychan's, "Key Mission Titles To Look For", and the lords' own letters: "The
+  stone should be stored in a sturdy wooden box. You won't be able to open it, so just send it on to me"): the chest
+  must leave the mission carried. Falls drop it (a teleport, a walk off a ledge, a fly), and the mission's carrier
+  (+0x440 +4) stays set after a drop, so it says nothing. The chest's physics keeps its position in 27 places (its
+  matrices, 0x1a6ea20 / 0x1a6ea60 in that save, and the body's, 0x1a75xxx-0x1a77xxx): written all together for 30
+  frames (`SHINO_POKE_AT`, the offset applied to each), the chest stays where it is put. Put beside the ninja at the
+  tunnel (-24, -17, -11), lifted (Triangle) and carried in (Up): "Return to your hideout?", "Mission Complete!", the
+  fragment's memory scenes, "第二章 忍びの道 人の道" (chapter 2), Soul Fragment 3 on the Etc shelf, the status hint
+  "A traitor.....?! They tricked me!" (day 34, `build/frag3_ok.state`).
 
 ## Next
 

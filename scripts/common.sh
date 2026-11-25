@@ -12,8 +12,9 @@ JOBS="${JOBS:-$(nproc)}"
 EXE=""
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=".exe" ;; esac
 
-# GCC needs a temporary folder; a shell started without TMP/TEMP sends it to C:\Windows (refused).
-if [ -z "${TMP:-}" ] || [ -z "${TEMP:-}" ]; then
+# GCC needs a temporary folder (a shell started without TMP/TEMP sends it to C:\Windows, refused); it is always the
+# build tree's, so nothing the build makes lands on C:.
+if true; then
     mkdir -p "$ROOT/build/tmp"
     export TMP="$ROOT/build/tmp" TEMP="$ROOT/build/tmp"
 fi
