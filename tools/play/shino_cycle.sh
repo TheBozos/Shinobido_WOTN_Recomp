@@ -69,8 +69,9 @@ for e in tp: # the delivery prompts after a completion ("Send to the recipient r
 import os
 end=spam+9200+int(os.environ.get("CYCLE_EXTRA","0")) # room for a rival ninja's encounter (SHINO_ANSWER_DANGER)
 t=spam
-while t<end-700: # Cross, Triangle through the prompts and ratings; Start skips the story's long scenes
-    ev.append(f"{t}:CROSS/4"); ev.append(f"{t+120}:TRIANGLE/4"); ev.append(f"{t+220}:START/4"); t+=300
+while t<end-700: # Cross, Triangle through the prompts and ratings (no Start: in play it opens "Abandon the
+    # mission?", and abandoning the final mission is a Game Over)
+    ev.append(f"{t}:CROSS/4"); ev.append(f"{t+120}:TRIANGLE/4"); t+=300
 for i in range(4): ev.append(f"{end-600+100*i}:TRIANGLE/4")
 ev.sort(key=lambda e:int(e.split(":")[0])); open(f"{d}/pad.txt","w").write(",".join(ev)); open(f"{d}/tp.txt","w").write(";".join(tp))
 caps=lcaps+[listframe]+list(range(acc+1300,end,250))+[end-5]

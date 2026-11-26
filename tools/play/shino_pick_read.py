@@ -135,8 +135,9 @@ else:
             return None
         doable = mode(titles[i]) is not None
         story = bool(re.search(r'(?i)threatening letter|shadow of the mosu|whale|find your body|final enemy|gamuran|'
-                               r'glowing stone|stone that|is hiding something|treasure', titles[i]))
-        return (story, fragment, doable and flag == 2, doable, client == lord, reward)
+                               r'glowing stone|stone that|is hiding something|treasure|(execute|kill|assassinate|defeat) (kagetora )?akame$', titles[i]))
+        return (story, fragment, doable and flag == 2, doable, client == lord,
+                mode(titles[i]) == "mixed" and target in (0, 1, 2) and target != lord, reward)  # fights an enemy lord's forces
     scores = [(score(i), i) for i in range(len(offered)) if score(i) is not None]
     k = max(scores)[1] if scores and (max(scores)[0][0] or max(scores)[0][1] or max(scores)[0][3]) else -1
 title = titles[k] if k >= 0 else ''

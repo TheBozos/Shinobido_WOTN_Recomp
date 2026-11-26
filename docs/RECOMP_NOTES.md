@@ -674,6 +674,30 @@ at stage 2 for good: it served lords at random.
   fragment's memory scenes, "第二章 忍びの道 人の道" (chapter 2), Soul Fragment 3 on the Etc shelf, the status hint
   "A traitor.....?! They tricked me!" (day 34, `build/frag3_ok.state`).
 
+### The ending (2026-11-26)
+
+Played to the ending on the port, serving Ichijo from day 9 (`tools/play`, `LORD=0 LETTERS=1 PICK_MODE=auto`), every
+story mission in the walkthrough's order, 110 days in all (days are approximate):
+
+| Day | Mission | What it took |
+| --- | --- | --- |
+| 34 | A glowing stone in Dandala Peak | the chest moved to the exit by hand (above): fragment 3 |
+| 40 | Find the glowing stone (Onji's) | the Kabuto fight (the cheats find the player by his status block there): fragment 4 |
+| 59 | The stone that Akame is hiding | the chest carried out (flat ground, the teleport keeps it): fragment 5 |
+| 63 | A threatening letter | Kinu rescued from the Kenobi duo (a longer day for the scenes): fragment 6 |
+| 86 | The stone that Akame is hiding (again) | the same: fragment 7 |
+| 94 | The killer whale's eye | Gamuran's scenes; Goh's soul put in a bear |
+| 96 | Find your body | walked through as the bear; Goh human again |
+| 109 | (Akame dies) | "The demise of Kagetora Akame"; "Barbarian hunting" and "The final enemy" left |
+| 110 | The final enemy | Kabuto, then Gamuran (1,450 health): the ending, Goh and Kinu's epilogue, the credits |
+
+Every scene, movie, boss fight and the credits played without a port fault. What the drivers needed on the way: the
+picker reads the list's rows in screen order (each title's widget holds its y; only the rows on screen exist, so a
+dump per scroll step), two-line titles, story titles first; the rival ninja's "I sense danger..." answered Yes;
+`SHINO_KILL_SPARE` (leaders spared while others live, grabbed where they fall); no Start in the cycle's prompt spam
+(in play it opens "Abandon the mission?", and abandoning the final mission is a Game Over: the first try went to the
+title screen and a new game).
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
