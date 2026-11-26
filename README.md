@@ -10,7 +10,7 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 ![Platform](https://img.shields.io/badge/platform-Windows%20(Linux%20%7C%20macOS%20later)-1b8cff)
 ![Compiler](https://img.shields.io/badge/compiler-GCC%20%7C%20Clang-1b8cff)
 ![Based on](https://img.shields.io/badge/based%20on-BozoEngine-17a35b)
-![Status](https://img.shields.io/badge/status-reaches%203D%20gameplay-e6a700)
+![Status](https://img.shields.io/badge/status-playable%20to%20the%20ending-17a35b)
 
 </div>
 
@@ -25,32 +25,30 @@ Built on [BozoEngine](https://github.com/TheBozos/BozoEngine), The Bozos' own to
 
 ## Status
 
-**The game reaches 3D gameplay natively (2026-11-23), and plays past the first mission (2026-11-24).** From "New Game"
-it plays the opening in-engine cutscene at Utakata Castle, then hands over control: the ninja runs and climbs through
-the castle grounds with his HUD (health, the detection eyes, the compass), the tutorial messages and the pause menu, and
-the guards who spot him fight him (2026-11-24: nine minutes of scripted play from there, without a fault). With the
-cheats it completes the first mission, plays the story movie that follows and reaches the Hideout: its menus, the
-mission scroll, a save to the memory card, and the next five missions (transport, thievery, total destruction), played
-to their end. Before that, it boots at full speed through "Sony Computer Entertainment Europe presents" and the memory
-card check to the title screen. Everything on screen is drawn from the game's own data:
-- the game's render scheduler is replaced natively;
-- its VU1 microprograms (its 2D and 3D both run through them) are recompiled to C++ from the player's executable at
-  build time, the 3D's VU0 microprograms interpreted;
-- the GS packets they send become native draws with the GS's depth test, the textures decoded from the game's own
-  uploads in the order the game interleaves them with its draws.
+**The game plays from boot to its ending (2026-11-26).** The whole story was played on the port, serving Lord Ichijo:
+all eight soul fragments, the rival ninja (Kabuto, the Mosu twins, the Kenobi duo), Goh's turn as a bear, the end of
+the war and the final fight with Gamuran, then the ending, Goh and Kinu's epilogue and the staff credits. Every
+mission, scene, movie and boss fight on the way ran without a port fault. The run used the port's cheats and play
+drivers (infinite health, one-hit kills, teleports, a script that plays each day in the Hideout), so it shows that the
+game works end to end, not that it was played by hand; [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) ("The ending") has
+the route.
 
-The sound modules (Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE) are statically compiled, and the title plays
-its music.
+What runs natively:
+- the boot, from "Sony Computer Entertainment Europe presents" and the memory card check to the title screen;
+- the movies (the Acquire logo, the intro, the story's movies), decoded natively with their sound;
+- the game's render scheduler, its VU1 microprograms (its 2D and 3D both run through them) recompiled to C++ from the
+  player's executable at build time, the 3D's VU0 microprograms interpreted;
+- the GS packets they send, as native draws with the GS's depth test, the textures decoded from the game's own uploads;
+- the sound modules (Sony's LIBSD and SDRDRV, Acquire's TORAST and TORASE), statically compiled: the music and the
+  sound effects play;
+- memory card saves, and save states that keep the sound.
 
-**The movies play with their sound** (the Acquire logo and the intro before the title): decoded natively, their
-audio fed through the game's own player to the IOP.
+The game runs at full speed: 25 frames a second, as on a PAL console (it draws a frame every second field).
 
-**The game runs at full speed**: 25 frames a second, as on a PAL console (the game draws a frame every second field),
-the castle's load, the cutscene and the 3D gameplay included (2026-11-24, with the VU1 microprograms recompiled).
-
-In progress:
-- **Sound in play**: the music and the sound effects play (the effects as the ninja acts); how they sound, and the
-  cutscene's spoken lines, are still to be checked by ear.
+Next:
+- **Speed**: the busiest scenes use most of a frame's CPU (the recompiled VU1 code first), too close for slower PCs.
+- **3D drawn natively** at the game's model functions, for higher resolutions and widescreen.
+- **Sound by ear**: the cutscenes' spoken lines and the effects in play are still to be checked by listening.
 
 [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has every boot step, how the drawing works and what is next.
 
@@ -68,6 +66,10 @@ In progress:
 | Gameplay: the ninja in the castle grounds, with his HUD | Combat: a guard has spotted him (the detection eyes) |
 | ![The Hideout](docs/screenshots/2026-11-24-hideout.png) | ![The second mission](docs/screenshots/2026-11-24-second-mission.png) |
 | The Hideout after the first mission: the Mission Scroll menu | The second mission begins: a town, the letter's box on his back |
+| ![Goh as a bear](docs/screenshots/2026-11-26-bear.png) | ![Gamuran](docs/screenshots/2026-11-26-gamuran.png) |
+| "The killer whale's eye": Goh's soul put into a bear | The final enemy: Gamuran |
+| ![The ending](docs/screenshots/2026-11-26-ending.png) | ![The credits](docs/screenshots/2026-11-26-credits.png) |
+| The ending: Goh after the last fight | The staff credits |
 
 ## Goal
 
