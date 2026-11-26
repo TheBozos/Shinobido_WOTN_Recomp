@@ -653,14 +653,16 @@ namespace shino
             uint64_t ended = 0, handed = 0, noImage = 0, mismatches = 0, verified = 0;
             std::map<uint32_t, uint64_t> handedAt, noImageAt; // by pc
         } g_compiled;
-        std::array<int, 2048> g_lastImage = [] { std::array<int, 2048> a; a.fill(-1); return a; }();
+        std::array<int, 2048> g_lastImage = [] { std::array<int, 2048> a; a.fill(-1); return a; }(),
+                              g_lastImage0 = [] { std::array<int, 2048> a; a.fill(-1); return a; }(); // VU1's, VU0's
         std::vector<std::vector<uint32_t>> g_candidates; // by pair: the images that hold it
 
         // The image whose code is loaded at pc's segment (its pair first), the last one found there first.
         int findImage(uint32_t pc)
         {
-            const uint32_t pair = (pc >> 3) & 2047u, segment = pair / vu::kSegmentPairs;
-            int &last = g_lastImage[pair];
+            const Vu1 &u = *g_cur;
+            const uint32_t pair = (pc >> 3) & (u.pcMask >> 3), segment = pair / vu::kSegmentPairs;
+            int &last = (u.vu0 ? g_lastImage0 : g_lastImage)[pair];
             if (last >= 0 && vu::segmentOk(static_cast<uint32_t>(last), segment))
                 return last;
             if (g_candidates.empty())
@@ -674,7 +676,9 @@ namespace shino
             {
                 const vu::Image &im = vu::kImages[id];
                 const uint32_t k = pair - im.start;
-                if (im.code[2 * k] != g_vu.micro[2 * pair] || im.code[2 * k + 1] != g_vu.micro[2 * pair + 1])
+                if (im.start + im.count > (u.pcMask >> 3) + 1) // (VU0: an image wider than its code memory)
+                    continue;
+                if (im.code[2 * k] != u.micro[2 * pair] || im.code[2 * k + 1] != u.micro[2 * pair + 1])
                     continue;
                 if (vu::segmentOk(id, segment))
                 {
@@ -685,9 +689,18 @@ namespace shino
             return -1;
         }
 
+        // The segment tables of the unit compiled code runs on (VU0's programs run on VU1's compiled images: the code
+        // VU0 loads, 0x4f2a70's 478 pairs, is one of the packets tools/shino_vu1_recomp.py finds).
+        void selectUnit(const Vu1 &v)
+        {
+            vu::g_segmentVersionCur = v.vu0 ? vu::g_segmentVersion0 : vu::g_segmentVersion;
+            vu::g_segmentChecksCur = v.vu0 ? vu::g_segmentChecks0 : vu::g_segmentChecks;
+        }
+
         void compiledFrom(uint32_t pc)
         {
-            Vu1 &v = g_vu;
+            Vu1 &v = *g_cur;
+            selectUnit(v);
             for (int hops = 0; hops < 1 << 20; ++hops)
             {
                 const int image = findImage(pc);
@@ -722,15 +735,23 @@ namespace shino
         void verifyRun(uint32_t pc)
         {
             static Vu1 before, compiled;
-            before = g_vu;
+            static std::vector<uint8_t> beforeData, compiledData;
+            Vu1 &unit = *g_cur;
+            const size_t dataBytes = 16u * (unit.qwMask + 1u);
+            before = unit;
+            beforeData.assign(unit.data, unit.data + dataBytes);
             compiledFrom(pc);
-            compiled = g_vu;
-            g_vu = before;
+            compiled = unit;
+            compiledData.assign(unit.data, unit.data + dataBytes);
+            unit = before;
+            std::memcpy(unit.data, beforeData.data(), dataBytes);
             g_noKick = true;
             interpret(pc);
             g_noKick = false;
             ++g_compiled.verified;
-            const Vu1 &a = compiled, &b = g_vu;
+            const Vu1 &a = compiled, &b = unit;
+            if (std::memcmp(compiledData.data(), unit.data, dataBytes) != 0 && g_compiled.mismatches++ < 40)
+                std::printf("[shino:verify] %s program %x: data memory differs%c", unit.vu0 ? "vu0" : "vu1", g_programStart, 10);
             std::string diff;
             auto check = [&](const char *name, const void *x, const void *y, size_t n) {
                 if (std::memcmp(x, y, n) != 0)
@@ -760,8 +781,24 @@ namespace shino
                     break;
                 }
             if (!diff.empty() && g_compiled.mismatches++ < 40)
-                std::printf("[shino:verify] program %x (flip %llu, #%d):%s\n", g_programStart, (unsigned long long)gs::flips(),
-                            g_inFlip, diff.c_str());
+            {
+                std::printf("[shino:verify] %s program %x (flip %llu, #%d):%s\n", unit.vu0 ? "vu0" : "vu1", g_programStart,
+                            (unsigned long long)gs::flips(), g_inFlip, diff.c_str());
+                if (g_compiled.mismatches <= 3) // the values: compiled, then interpreted; the entry's
+                {
+                    for (int r = 1; r < 32; ++r)
+                        if (std::memcmp(a.vf[r].f, b.vf[r].f, 16) != 0)
+                            std::printf("  vf%d %g %g %g %g | %g %g %g %g | entry %g %g %g %g\n", r, a.vf[r].f[0], a.vf[r].f[1],
+                                        a.vf[r].f[2], a.vf[r].f[3], b.vf[r].f[0], b.vf[r].f[1], b.vf[r].f[2], b.vf[r].f[3],
+                                        before.vf[r].f[0], before.vf[r].f[1], before.vf[r].f[2], before.vf[r].f[3]);
+                    std::printf("  status %x | %x, mac %x | %x, q %g | %g, pairs %llu | %llu, vi1-15:", a.status, b.status, a.mac,
+                                b.mac, a.q, b.q, (unsigned long long)(a.pairs - before.pairs),
+                                (unsigned long long)(b.pairs - before.pairs));
+                    for (int r = 1; r < 16; ++r)
+                        std::printf(" %x/%x", a.vi[r], b.vi[r]);
+                    std::printf("\n");
+                }
+            }
         }
 
         void runCompiled(uint32_t pc)
@@ -892,7 +929,8 @@ namespace shino
             // TOP: the buffer the program reads; the next uses the other (BASE, BASE + OFFSET).
             v.vi[0] = 0;
             const uint32_t pc = pcBytes & v.pcMask;
-            if (!v.vu0 && !g_traceThis && compiledOn())
+            static const bool vu0Compiled = !std::getenv("SHINO_VU0_INTERP"); // SHINO_VU0_INTERP=1: VU0 interpreted
+            if (!g_traceThis && compiledOn() && (!v.vu0 || vu0Compiled))
                 runCompiled(pc);
             else
                 interpret(pc);
@@ -1120,8 +1158,8 @@ namespace shino
                 {
                     const uint32_t pair = (imm + k) & (g_cur->pcMask >> 3);
                     uint32_t *to = &g_cur->micro[pair * 2];
-                    if (!g_cur->vu0 && std::memcmp(to, data + 8 * k, 8) != 0)
-                        ++vu::g_segmentVersion[pair / vu::kSegmentPairs]; // the compiled code there to be checked again
+                    if (std::memcmp(to, data + 8 * k, 8) != 0) // the compiled code there to be checked again
+                        ++(g_cur->vu0 ? vu::g_segmentVersion0 : vu::g_segmentVersion)[pair / vu::kSegmentPairs];
                     std::memcpy(to, data + 8 * k, 8);
                 }
                 break;
@@ -1159,16 +1197,21 @@ namespace shino
     namespace vu
     {
         const LaneMasks g_lanes;
-        uint32_t g_segmentVersion[kSegments] = {};
+        uint32_t g_segmentVersion[kSegments] = {}, g_segmentVersion0[kSegments] = {};
         SegmentCheck *g_segmentChecks = new SegmentCheck[kImageCount * kSegments];
+        SegmentCheck *g_segmentChecks0 = new SegmentCheck[kImageCount * kSegments];
+        uint32_t *g_segmentVersionCur = g_segmentVersion;
+        SegmentCheck *g_segmentChecksCur = g_segmentChecks;
         bool recheckSegment(uint32_t image, uint32_t segment)
         {
             const Image &im = kImages[image];
             const uint32_t lo = std::max(segment * kSegmentPairs, im.start);
             const uint32_t hi = std::min((segment + 1) * kSegmentPairs, im.start + im.count);
-            const bool ok = lo < hi && std::memcmp(&g_vu.micro[lo * 2], &im.code[(lo - im.start) * 2], (hi - lo) * 8) == 0;
-            SegmentCheck &c = g_segmentChecks[image * kSegments + segment];
-            c.version = g_segmentVersion[segment];
+            const Vu1 &u = *g_cur;
+            const bool ok = lo < hi && hi <= (u.pcMask >> 3) + 1 &&
+                            std::memcmp(&u.micro[lo * 2], &im.code[(lo - im.start) * 2], (hi - lo) * 8) == 0;
+            SegmentCheck &c = g_segmentChecksCur[image * kSegments + segment];
+            c.version = g_segmentVersionCur[segment];
             c.ok = ok;
             return ok;
         }
@@ -1181,6 +1224,11 @@ namespace shino
         }
         void kick(uint32_t address, uint32_t pc)
         {
+            if (g_cur->vu0) // VU0 has no PATH1 (the interpreter counts it the same)
+            {
+                ++g_cur->kicks;
+                return;
+            }
             Unit &v = g_vu;
             ++v.kicks;
             static const char *t = std::getenv("SHINO_TRACE_KICK");

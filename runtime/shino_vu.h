@@ -346,8 +346,8 @@ namespace shino::vu
     // At each pair's end: its MAC flags into the history FMAND / FMEQ / FMOR read 4 pairs later.
     SHINO_VU_INLINE void macPush(Unit &v) { v.macHistory[v.macAt++ & 3u] = v.mac; }
 
-    // VU1's data memory for the compiled programs (they run on VU1 alone: its own 1024 quadwords, not through `data`).
-    SHINO_VU_INLINE float *mem1(Unit &v, uint32_t qw) { return reinterpret_cast<float *>(v.mem + 16 * (qw & 0x3FFu)); }
+    // The data memory for the compiled programs: the unit's (VU1's own 1024 quadwords, or VU0's 256, the runtime's).
+    SHINO_VU_INLINE float *mem1(Unit &v, uint32_t qw) { return reinterpret_cast<float *>(v.data + 16 * (qw & v.qwMask)); }
     SHINO_VU_INLINE __m128 load1(Unit &v, uint32_t qw) { return _mm_load_ps(mem1(v, qw)); }
     SHINO_VU_INLINE void store1(Unit &v, uint32_t qw, uint32_t r, uint32_t dest)
     {
@@ -431,12 +431,15 @@ namespace shino::vu
         uint32_t version = ~0u;
         bool ok = false;
     };
-    extern uint32_t g_segmentVersion[kSegments];
-    extern SegmentCheck *g_segmentChecks; // kImageCount x kSegments
+    extern uint32_t g_segmentVersion[kSegments], g_segmentVersion0[kSegments]; // VU1's code memory, VU0's
+    extern SegmentCheck *g_segmentChecks, *g_segmentChecks0;                  // kImageCount x kSegments each
+    // The tables of the unit the compiled code runs on (VU1's, or VU0's when a VU0 program runs compiled).
+    extern uint32_t *g_segmentVersionCur;
+    extern SegmentCheck *g_segmentChecksCur;
     bool recheckSegment(uint32_t image, uint32_t segment);
     SHINO_VU_INLINE bool segmentOk(uint32_t image, uint32_t segment)
     {
-        const SegmentCheck &c = g_segmentChecks[image * kSegments + segment];
-        return c.version == g_segmentVersion[segment] ? c.ok : recheckSegment(image, segment);
+        const SegmentCheck &c = g_segmentChecksCur[image * kSegments + segment];
+        return c.version == g_segmentVersionCur[segment] ? c.ok : recheckSegment(image, segment);
     }
 } // namespace shino::vu
