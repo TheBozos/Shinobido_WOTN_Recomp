@@ -17,12 +17,14 @@ namespace shino::vu
     {
         float f[4] = {0, 0, 0, 0}; // x y z w
     };
-    // A vector unit: VU1 (16 KB data, 16 KB code), or VU0 (4 KB each; its registers are the EE's COP2 state, copied
-    // in and out around a program, and its data memory is the runtime's).
+    // A vector unit: VU1 (16 KB data, 16 KB code), or VU0 (4 KB each; its data memory is the runtime's, its vf
+    // registers the EE context's COP2 vectors themselves, vf pointing there; the others copied in and out).
+    // A copy of a unit shares the original's vf (SHINO_VU_VERIFY keeps its own copies of their values).
     struct Unit
     {
-        Unit() { vf[0].f[3] = 1.0f; } // vf0 is the constant (0, 0, 0, 1): writes to it are dropped
-        Vec vf[32];
+        Unit() { regs[0].f[3] = 1.0f; } // vf0 is the constant (0, 0, 0, 1): writes to it are dropped
+        Vec regs[32];   // VU1's vf registers
+        Vec *vf = regs; // the vf registers in use
         uint16_t vi[16] = {};
         Vec acc;
         float q = 0, p = 0, i = 0;

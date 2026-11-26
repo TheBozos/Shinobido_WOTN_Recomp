@@ -736,14 +736,18 @@ namespace shino
         {
             static Vu1 before, compiled;
             static std::vector<uint8_t> beforeData, compiledData;
+            static vu::Vec beforeVf[32], compiledVf[32]; // (a copy of the unit shares its vf)
             Vu1 &unit = *g_cur;
             const size_t dataBytes = 16u * (unit.qwMask + 1u);
             before = unit;
+            std::copy(unit.vf, unit.vf + 32, beforeVf);
             beforeData.assign(unit.data, unit.data + dataBytes);
             compiledFrom(pc);
             compiled = unit;
+            std::copy(unit.vf, unit.vf + 32, compiledVf);
             compiledData.assign(unit.data, unit.data + dataBytes);
             unit = before;
+            std::copy(beforeVf, beforeVf + 32, unit.vf);
             std::memcpy(unit.data, beforeData.data(), dataBytes);
             g_noKick = true;
             interpret(pc);
@@ -758,7 +762,7 @@ namespace shino
                     diff += std::string(" ") + name;
             };
             for (int r = 0; r < 32; ++r)
-                if (std::memcmp(a.vf[r].f, b.vf[r].f, 16) != 0)
+                if (std::memcmp(compiledVf[r].f, b.vf[r].f, 16) != 0)
                     diff += " vf" + std::to_string(r);
             check("vi", a.vi, b.vi, sizeof(a.vi));
             check("acc", a.acc.f, b.acc.f, 16);
@@ -787,10 +791,10 @@ namespace shino
                 if (g_compiled.mismatches <= 3) // the values: compiled, then interpreted; the entry's
                 {
                     for (int r = 1; r < 32; ++r)
-                        if (std::memcmp(a.vf[r].f, b.vf[r].f, 16) != 0)
-                            std::printf("  vf%d %g %g %g %g | %g %g %g %g | entry %g %g %g %g\n", r, a.vf[r].f[0], a.vf[r].f[1],
-                                        a.vf[r].f[2], a.vf[r].f[3], b.vf[r].f[0], b.vf[r].f[1], b.vf[r].f[2], b.vf[r].f[3],
-                                        before.vf[r].f[0], before.vf[r].f[1], before.vf[r].f[2], before.vf[r].f[3]);
+                        if (std::memcmp(compiledVf[r].f, b.vf[r].f, 16) != 0)
+                            std::printf("  vf%d %g %g %g %g | %g %g %g %g | entry %g %g %g %g\n", r, compiledVf[r].f[0], compiledVf[r].f[1],
+                                        compiledVf[r].f[2], compiledVf[r].f[3], b.vf[r].f[0], b.vf[r].f[1], b.vf[r].f[2], b.vf[r].f[3],
+                                        beforeVf[r].f[0], beforeVf[r].f[1], beforeVf[r].f[2], beforeVf[r].f[3]);
                     std::printf("  status %x | %x, mac %x | %x, q %g | %g, pairs %llu | %llu, vi1-15:", a.status, b.status, a.mac,
                                 b.mac, a.q, b.q, (unsigned long long)(a.pairs - before.pairs),
                                 (unsigned long long)(b.pairs - before.pairs));
@@ -1321,8 +1325,8 @@ namespace shino
         v.qwMask = 0xFFu;
         v.pcMask = 0xFF8u;
         v.vu0 = true;
-        for (int r = 1; r < 32; ++r)
-            std::memcpy(v.vf[r].f, ctx->vu0_vf[r].f, 16);
+        static_assert(sizeof(ctx->vu0_vf[0]) == sizeof(vu::Vec) && sizeof(ctx->vu0_vf) == 32 * sizeof(vu::Vec));
+        v.vf = reinterpret_cast<vu::Vec *>(ctx->vu0_vf); // used in place: 10k programs a frame, of about 7 pairs
         std::memcpy(v.acc.f, ctx->vu0_acc.f, 16);
         for (int r = 0; r < 16; ++r)
             v.vi[r] = static_cast<uint16_t>(ctx->vi[r]);
@@ -1365,8 +1369,6 @@ namespace shino
             v.q = v.pendingQ;
             v.qDelay = 0;
         }
-        for (int r = 1; r < 32; ++r)
-            std::memcpy(ctx->vu0_vf[r].f, v.vf[r].f, 16);
         std::memcpy(ctx->vu0_acc.f, v.acc.f, 16);
         for (int r = 1; r < 16; ++r)
             ctx->vi[r] = v.vi[r];
