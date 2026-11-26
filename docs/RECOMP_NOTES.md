@@ -321,6 +321,24 @@ programs at `0x520` and `0x4e8`). Verify names the unit and prints the differing
 at entry). None different over 600 frames of VU0 code and 500 of play (347k VU1 programs). `SHINO_VU0_INTERP=1`
 interprets VU0 again. A small gain: 1 to 2 ms in the heaviest flips.
 
+### A busy fight, measured (2026-11-27)
+
+Where the port falls short: the uncapped window runs of the missions (`build/cyc/*/run.txt`, `[window]` lines). Every
+stretch under 22 game frames a second was a movie (the demux, above); gameplay dipped to 21 to 33 only while other runs
+loaded the machine. Replayed alone, the busiest (r94: a town at night, guards fought, from `q93.state` with its pad and
+teleports) never goes under 52 game frames a second uncapped (the game needs 25). Sampled there (flips 6000 to 8750):
+- **VU0's calls.** The game calls about 10,000 VU0 programs a frame, of about 7 pairs (a collision loop, `0x1eadb8`,
+  calls `0x4e8` and `0x4b0` each turn). `vu0::run` copied the 31 vf registers in and out around each: 15% of the game
+  thread, mostly stalls on the copies. The VU0 unit now uses the EE context's vectors in place (`Unit::vf` a pointer:
+  VU1's own `regs`, VU0's `ctx->vu0_vf`); vi, ACC and the rest are still copied. 2%.
+- **MMI.** The same loop's pcgtw / pmaxw / paddw were scalar loops through the stack (BozoEngine's `ops_mmi.h`, lane
+  loops over the union): 10%. They are SSE2 now (TheBozos/BozoEngine#155, 42 helpers, checked against the loops on
+  8.4M random cases); the function no longer shows.
+Together the stretch's samples went from 20,921 to 15,534 (26% less CPU), the VU0 and VU1 program and pair counts the
+same; `SHINO_VU_VERIFY=1` from `q93.state` into the fight: 52M programs, none different. What is left there: the
+compiled VU1 code 35% (images 45, 0 and 67: the clamping, the dest blends, the pair count and Q's countdown each pair,
+spills of the 32 vector locals), the EE code 26% (spread), the VU call path 9%, the GS translator 7%, VIF 6%.
+
 ## The GS translator and VIF, faster (2026-11-24)
 
 Measured with `SHINO_SAMPLE=<first flip>:<last flip>` (`runtime/shino_profile.cpp`: the game thread's instruction
@@ -718,7 +736,9 @@ title screen and a new game).
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
   the largest part (about 1.5 ns a pair: the arithmetic and its clamping). Then the primitives' assembly
   (`packedFast`, about 6%). In the busiest play scenes the recompiled EE code ("other" in `SHINO_PROFILE`) is now the
-  largest bucket. VU0 is compiled and the movies are no longer decode-bound (2026-11-26).
+  largest bucket. VU0 is compiled and the movies are no longer decode-bound (2026-11-26). The busiest fight replayed
+  holds 52 game frames a second uncapped or more, and takes a quarter less CPU since (VU0's registers in place, MMI in
+  SSE2: "A busy fight, measured"). Next there: the compiled VU1 code (35%).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).
