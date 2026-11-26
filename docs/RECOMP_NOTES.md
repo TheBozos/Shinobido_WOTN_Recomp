@@ -185,6 +185,11 @@ The port's settings in BozoEngine:
   transfer address one 1 KiB block ahead of the sample playing, as the SPU2 does: at the play position itself the
   player's ring read as empty once full, and was overwritten.
 
+The demux copied the stream into its pending buffer a byte at a time (a guest translation each, 0x800 a sector); the
+ending's and the credits' long movies were decode-bound, about 3 minutes headless. It copies whole runs from the ring
+now (BozoEngine `appendStream`, 2026-11-26): 44 s, the same pictures and flips. In `--mute` runs the movies show about
+42 pictures a second (25 encoded, the intro alike): with no sound to pace them, the pictures follow the frames.
+
 The Acquire logo (`ACQUIRE.PSS`) is silent on the disc: its sound track (48 kHz stereo, 512-byte interleave, as
 `NINJA.PSS`'s) is 895K samples of zero. The port feeds it to the SPU2's input like the others (core 0's input, its
 volume 0x7fff, the master 0x3332); `NINJA.PSS`'s track peaks at 32387 and plays.
@@ -305,6 +310,16 @@ and the cutscene's start went from 12 to 17 frames a second to 30 to 36, play fr
 load and the cutscene's start hold 24 to 25 frames a second (16 to 17 before), and play near several guards 24 to 25
 (down to 19.5 before). The GS translator (10 ms a frame at the load), VIF (6 ms), the texture decodes and uploads were
 then the larger parts (next section).
+
+### VU0 compiled too (2026-11-26)
+
+The VU0 microcode (the packet at `0x4f2a70`, 478 pairs) is one of the 123 sets, but ran interpreted. It runs compiled
+now: each unit keeps its own segment versions and checks (a VU0 MPG no longer invalidates the VU1 sets, nor back),
+the set lookup keeps to the unit's code size (pcMask), and the compiled loads and stores address the unit's own data
+memory (`mem1`: `v.data`, `qwMask`; it read VU1's before, which `SHINO_VU_VERIFY=1` showed as zeros loaded in the
+programs at `0x520` and `0x4e8`). Verify names the unit and prints the differing registers (compiled, interpreted,
+at entry). None different over 600 frames of VU0 code and 500 of play (347k VU1 programs). `SHINO_VU0_INTERP=1`
+interprets VU0 again. A small gain: 1 to 2 ms in the heaviest flips.
 
 ## The GS translator and VIF, faster (2026-11-24)
 
@@ -702,7 +717,8 @@ title screen and a new game).
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
   the largest part (about 1.5 ns a pair: the arithmetic and its clamping). Then the primitives' assembly
-  (`packedFast`, about 6%).
+  (`packedFast`, about 6%). In the busiest play scenes the recompiled EE code ("other" in `SHINO_PROFILE`) is now the
+  largest bucket. VU0 is compiled and the movies are no longer decode-bound (2026-11-26).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
 - Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
   effects' voices, not what they sound like).
