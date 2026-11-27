@@ -654,7 +654,8 @@ namespace shino
             uint64_t ended = 0, handed = 0, noImage = 0, mismatches = 0, verified = 0;
             std::map<uint32_t, uint64_t> handedAt, noImageAt; // by pc
         } g_compiled;
-        bool g_stopped = false; // the compiled run ended at Unit::stopAt
+        bool g_stopped = false;  // the compiled run ended at a pair of Unit::stopPairs
+        uint32_t g_stoppedAt = 0; // its pc
         std::array<int, 2048> g_lastImage = [] { std::array<int, 2048> a; a.fill(-1); return a; }(),
                               g_lastImage0 = [] { std::array<int, 2048> a; a.fill(-1); return a; }(); // VU1's, VU0's
         std::vector<std::vector<uint32_t>> g_candidates; // by pair: the images that hold it
@@ -728,9 +729,10 @@ namespace shino
                     ++g_compiled.ended;
                     return;
                 }
-                if (!(r & vu::kInterpret) && (r & v.pcMask) == v.stopAt) // a native draw takes over (shino_native3d.cpp)
+                if (!(r & vu::kInterpret) && v.stopPairs && v.stopPairs[(r & v.pcMask) >> 3]) // a native draw takes over
                 {
                     g_stopped = true;
+                    g_stoppedAt = r & v.pcMask;
                     return;
                 }
                 pc = r & v.pcMask;
@@ -942,21 +944,22 @@ namespace shino
             const uint32_t pc = pcBytes & v.pcMask;
             static const bool vu0Compiled = !std::getenv("SHINO_VU0_INTERP"); // SHINO_VU0_INTERP=1: VU0 interpreted
             static const bool verifying = std::getenv("SHINO_VU_VERIFY") != nullptr;
-            // Native 3D (shino_native3d.cpp): the main renderer's program stops at its variant and the batch is drawn
+            // Native 3D (shino_native3d.cpp): a renderer's program stops at a variant drawn natively and the batch is drawn
             // natively; verify: drawn by the VU as well, the two compared.
             const native3d::Mode nativeMode = native3d::mode();
-            const uint32_t takeOver = !v.vu0 && !g_traceThis && !verifying && nativeMode != native3d::Mode::Off && compiledOn()
-                                          ? native3d::takeOverAt(v)
-                                          : 0u;
-            if (takeOver)
+            const uint8_t *stops = !v.vu0 && !g_traceThis && !verifying && nativeMode != native3d::Mode::Off && compiledOn()
+                                       ? native3d::takeOverAt(v)
+                                       : nullptr;
+            if (stops)
             {
-                v.stopAt = takeOver;
+                v.stopPairs = stops;
                 g_stopped = false;
                 compiledFrom(pc);
-                v.stopAt = ~0u;
+                v.stopPairs = nullptr;
                 if (g_stopped)
                 {
-                    native3d::batch(v, nativeMode != native3d::Mode::Verify);
+                    const uint32_t takeOver = g_stoppedAt;
+                    native3d::batch(v, takeOver, nativeMode != native3d::Mode::Verify);
                     if (nativeMode == native3d::Mode::Verify)
                     {
                         compiledFrom(takeOver); // the variant, as without native drawing

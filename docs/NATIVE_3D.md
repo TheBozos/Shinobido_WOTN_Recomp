@@ -161,6 +161,22 @@ packet vertices and on the final fight 9.67M, 99.9% identical in every field (th
 effect); frame-exact captures with both renderers native differ at about 1.2% of the pixels (edges); a mission day
 (12.6M batches) without a fault.
 
+## Stage 1c: the stop set and the remaining variants (2026-11-27)
+
+The programs stop at any of a renderer's native variants (`Unit::stopPairs`, a table of pairs the compiled code's
+computed jumps check: the setup chooses the variant only as it runs). The main renderer's variant 554 is the
+characters' 644, instruction for instruction: drawn natively the same way (130,000 more batches in the final fight,
+the packets' differences unchanged).
+
+What is left, by runs (the final fight and the frame-5200 play, `MSCAL` starts): the main renderer's variant 1438
+(about 28,000: another first pass and clipper), the characters' 1113 (10,000), set `0x599510`'s variant 657
+(44,000 in the fight), set `0x5e7cd0`'s 1044 (10,000) and set `0x59d290`'s 520 (a few thousand). 657 draws each
+strip twice: an A+D packet (FOGCOL, TEX0_1) and the strip, then another (FOGCOL 0, TEX0_2) and the strip with a
+second UV set and colour the setup leaves in a buffer (`vi12`, three quadwords a vertex) and the positions the variant
+writes there. Natively it needs the variant's kicks replayed in order (the register packets applied, the strips drawn
+from the batch's own positions): the native mode now drops every kick of a taken-over variant, register packets too,
+so 657 stays on the GS path for now.
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter

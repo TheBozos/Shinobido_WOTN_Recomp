@@ -26,13 +26,13 @@ namespace shino::native3d
     };
     Mode mode();
 
-    // The VU1 code memory holds the main renderer: its variant at pair 1023 (the pc a native batch takes over at), 0
-    // when not.
-    uint32_t takeOverAt(const vu::Unit &v);
+    // The VU1 code memory holds a renderer some of whose variants are drawn natively: their entry pairs marked (the
+    // program stops there, vu::Unit::stopPairs); null when none.
+    const uint8_t *takeOverAt(const vu::Unit &v);
 
-    // The batch the VU program stopped at the variant for: drawn (submit) and remembered for compare(); its buffer left
-    // as the variant's first pass leaves it (later programs read it: a light pass over the same vertices).
-    void batch(vu::Unit &v, bool submit);
+    // The batch the VU program stopped for at the variant entered at `pc`: drawn (submit) and remembered for compare().
+    // In skip mode its buffer is left as the variant's first pass leaves it.
+    void batch(vu::Unit &v, uint32_t pc, bool submit);
     // Verify: the VU program having run the variant on the same batch, its clip positions (slot 0) and cull flags
     // (slot 1's w) against the native batch's.
     void compare(const vu::Unit &v);

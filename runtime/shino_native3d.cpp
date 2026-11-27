@@ -15,6 +15,7 @@
 #include "shino_gs.h"
 #include "shino_vu.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -34,11 +35,13 @@ namespace shino::native3d
             bool clipper; // the main renderer's: ADC by the clip-space determinant, the clipper, the first pass written back
         };
         constexpr Kind kKinds[] = {
-            {0x539c30u, 1023u, 0x72du, true},   // the main renderer (MSCAL 0x3968), flags 0xa / 0xb
-            {0x579a00u, 644u, 0x787u, false},   // the characters' (MSCAL 0x3c38), flags 0x9: no clipping, screen-space culling
+            {0x539c30u, 1023u, 0x72du, true},  // the main renderer (MSCAL 0x3968), flags 0xa / 0xb
+            {0x539c30u, 554u, 0x72du, false},  // the main renderer, its unclipped variant (the characters' 644, the same code)
+            {0x579a00u, 644u, 0x787u, false},  // the characters' (MSCAL 0x3c38), flags 0x9: no clipping, screen-space culling
         };
         constexpr uint32_t kKindCount = sizeof(kKinds) / sizeof(kKinds[0]);
-        uint32_t g_kind = 0; // the kind takeOverAt found last
+        uint32_t g_kind = 0;   // the kind of the batch drawn last
+        uint32_t g_packet = 0; // the renderer takeOverAt found last
 
         struct Stats
         {
@@ -103,21 +106,42 @@ namespace shino::native3d
         return m;
     }
 
-    uint32_t takeOverAt(const vu::Unit &v)
+    const uint8_t *takeOverAt(const vu::Unit &v)
     {
-        static const std::array<const vu::Image *, kKindCount> images = [] {
-            std::array<const vu::Image *, kKindCount> a{};
-            for (uint32_t i = 0; i < kKindCount; ++i)
-                a[i] = imageOf(kKinds[i].packet);
-            return a;
+        // A renderer: its microcode's image, its entries checked (the setup at pair 0, the next batches' program, each
+        // native variant's), and those variants' pairs marked.
+        struct Renderer
+        {
+            uint32_t packet = 0;
+            const vu::Image *image = nullptr;
+            std::vector<uint32_t> pairs;
+            std::array<uint8_t, 2048> stops{};
+        };
+        static std::vector<Renderer> renderers = [] {
+            std::vector<Renderer> list;
+            for (const Kind &k : kKinds)
+            {
+                auto it = std::find_if(list.begin(), list.end(), [&](const Renderer &r) { return r.packet == k.packet; });
+                if (it == list.end())
+                {
+                    list.push_back({});
+                    it = list.end() - 1;
+                    it->packet = k.packet;
+                    it->image = imageOf(k.packet);
+                    it->pairs = {0u, k.program};
+                }
+                it->pairs.push_back(k.variant);
+                it->stops[k.variant] = 1;
+            }
+            return list;
         }();
         if (v.vu0)
-            return 0;
-        for (uint32_t i = 0; i < kKindCount; ++i)
+            return nullptr;
+        for (const Renderer &r : renderers)
         {
-            const vu::Image *im = images[i];
+            const vu::Image *im = r.image;
             bool loaded = im != nullptr;
-            for (const uint32_t p : {0u, kKinds[i].variant, kKinds[i].program})
+            for (const uint32_t p : r.pairs)
             {
                 if (!loaded || p < im->start || p >= im->start + im->count)
                 {
@@ -129,16 +153,19 @@ namespace shino::native3d
             }
             if (loaded)
             {
-                g_kind = i;
-                return kKinds[i].variant * 8u;
+                g_packet = r.packet;
+                return r.stops.data();
             }
         }
-        return 0;
+        return nullptr;
     }
 
-    void batch(vu::Unit &v, bool submit)
+    void batch(vu::Unit &v, uint32_t pc, bool submit)
     {
         const uint32_t base = v.vi[1], count = v.vi[9];
+        for (uint32_t i = 0; i < kKindCount; ++i)
+            if (kKinds[i].packet == g_packet && kKinds[i].variant == pc / 8u)
+                g_kind = i;
         const Kind &kind = kKinds[g_kind];
         ++g_stats.batches;
         g_stats.vertices += count;

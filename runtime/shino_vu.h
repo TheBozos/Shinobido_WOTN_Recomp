@@ -43,9 +43,9 @@ namespace shino::vu
         uint32_t qwMask = 0x3FFu;  // its quadwords
         uint32_t pcMask = 0x3FF8u; // the code memory's bytes (pairs of 8)
         bool vu0 = false;
-        // A computed jump to stopAt ends the compiled run there (its pc returned): a native draw takes the program's work
-        // from that point (runtime/shino_native3d.cpp). ~0: none.
-        uint32_t stopAt = ~0u;
+        // A computed jump to a pair marked here ends the compiled run there (its pc returned): a native draw takes the
+        // program's work from that point (runtime/shino_native3d.cpp). Null: none.
+        const uint8_t *stopPairs = nullptr;
     };
 
     constexpr float kFloatMax = 3.40282347e38f;
