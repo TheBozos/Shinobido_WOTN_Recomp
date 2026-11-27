@@ -13,6 +13,7 @@
 
 #include "bozo/render/renderer.h"
 #include "shino_gs.h"
+#include "shino_port.h"
 #include "shino_vu.h"
 
 #include <algorithm>
@@ -32,15 +33,38 @@ namespace shino::native3d
         struct Kind
         {
             uint32_t packet, variant, program;
-            bool clipper; // the main renderer's: ADC by the clip-space determinant, the clipper, the first pass written back
+            bool clipper;        // the main renderer's: ADC by the clip-space determinant, the clipper, the first pass written back
+            bool replay = false; // the variant run (its kicks held), then its packets replayed: strips drawn natively
         };
         constexpr Kind kKinds[] = {
             {0x539c30u, 1023u, 0x72du, true},  // the main renderer (MSCAL 0x3968), flags 0xa / 0xb
             {0x539c30u, 554u, 0x72du, false},  // the main renderer, its unclipped variant (the characters' 644, the same code)
             {0x579a00u, 644u, 0x787u, false},  // the characters' (MSCAL 0x3c38), flags 0x9: no clipping, screen-space culling
+            // Replayed: the variant's own GS packets, each strip drawn natively from the batch's positions (four quadwords a
+            // vertex at vi1) where its vertices are the batch's own on the screen, the other packets as they are.
+            {0x599510u, 657u, 0x74du, false, true}, // set 0x599510 (MSCAL 0x3a68): each strip twice, a second texture
+            {0x539c30u, 1438u, 0x72du, false, true}, // the main renderer's other clipped variant (flags 0xe / 0xf)
+            {0x579a00u, 1113u, 0x787u, false, true}, // the characters' clipped variant (flags 0xb)
+            {0x59d290u, 520u, 0x5f1u, false, true},  // set 0x59d290 (MSCAL 0x2f88)
+            {0x5e7cd0u, 1044u, 0x742u, false, true}, // set 0x5e7cd0 (MSCAL 0x3a10)
         };
         constexpr uint32_t kKindCount = sizeof(kKinds) / sizeof(kKinds[0]);
         uint32_t g_kind = 0;   // the kind of the batch drawn last
+        // A replayed variant's batch: its vertices in the object's space and on the GS screen, its matrix, and the GIF
+        // packets the variant sent (each a tag and its data, EOP set), in order.
+        struct Replay
+        {
+            bool active = false;
+            uint32_t count = 0;
+            std::vector<std::array<float, 3>> position;
+            std::vector<std::array<float, 2>> screen;
+            float matrix[16] = {};
+            std::vector<std::vector<uint8_t>> packets;
+        } g_replay;
+        struct ReplayStats
+        {
+            uint64_t batches = 0, strips = 0, native = 0, other = 0, misaligned = 0;
+        } g_replayStats;
         uint32_t g_packet = 0; // the renderer takeOverAt found last
 
         struct Stats
@@ -240,6 +264,23 @@ namespace shino::native3d
             f = std::min(std::max(f, 0.0f), 255.0f);
             out.fog = static_cast<float>(static_cast<int32_t>(f)) / 255.0f;
             out.q = 1.0f;
+        }
+        if (kind.replay && mode() == Mode::On)
+        {
+            Replay &r = g_replay;
+            r.active = true;
+            r.count = count;
+            r.position.resize(count);
+            r.screen.resize(count);
+            std::copy(matrix, matrix + 16, r.matrix);
+            for (uint32_t k = 0; k < count; ++k)
+            {
+                r.position[k] = {corner[k].x, corner[k].y, corner[k].z};
+                r.screen[k] = {cx + clip[k][0] / clip[k][3], cy + clip[k][1] / clip[k][3]};
+            }
+            r.packets.clear();
+            ++g_replayStats.batches;
+            return;
         }
         auto cross = [](const std::array<float, 4> &a, const std::array<float, 4> &b) {
             // OPMULA / OPMSUB with fs = a, ft = b: a.yzx b.zxy - b.yzx a.zxy, on (x, y, w)
@@ -526,10 +567,28 @@ namespace shino::native3d
         ++g_stats.compared;
     }
 
-    bool capturing() { return g_capturing; }
+    bool capturing() { return g_capturing || g_replay.active; }
 
     void captureKick(const uint8_t *mem, uint32_t address)
     {
+        if (g_replay.active) // each packet kept whole (its tag with EOP set, then its data)
+            for (int packets = 0, at = static_cast<int>(address); packets < 64; ++packets)
+            {
+                const uint8_t *tag = mem + 16 * (static_cast<uint32_t>(at) & 0x3FFu);
+                uint64_t lo;
+                std::memcpy(&lo, tag, 8);
+                const uint32_t loops = lo & 0x7FFFu, flg = (lo >> 58) & 3u, nreg = (lo >> 60) ? uint32_t(lo >> 60) : 16u;
+                const uint32_t qwords = flg == 0 ? loops * nreg : flg == 1 ? (loops * nreg + 1) / 2 : loops;
+                std::vector<uint8_t> p(16u * (qwords + 1));
+                for (uint32_t q = 0; q <= qwords; ++q)
+                    std::memcpy(p.data() + 16 * q, mem + 16 * ((static_cast<uint32_t>(at) + q) & 0x3FFu), 16);
+                const uint64_t eop = lo | (1ull << 15);
+                std::memcpy(p.data(), &eop, 8);
+                g_replay.packets.push_back(std::move(p));
+                at += static_cast<int>(qwords + 1);
+                if ((lo >> 15) & 1u)
+                    break;
+            }
         for (int packets = 0; packets < 64; ++packets)
         {
             const uint8_t *tag = mem + 16 * (address & 0x3FFu);
@@ -578,6 +637,106 @@ namespace shino::native3d
         }
     }
 
+    void finish(const vu::Unit &)
+    {
+        Replay &r = g_replay;
+        if (!r.active)
+            return;
+        r.active = false;
+        static std::vector<uint8_t> memory(16384);
+        for (const std::vector<uint8_t> &p : r.packets)
+        {
+            uint64_t lo, regs;
+            std::memcpy(&lo, p.data(), 8);
+            std::memcpy(&regs, p.data() + 8, 8);
+            const uint32_t loops = lo & 0x7FFFu, flg = (lo >> 58) & 3u, nreg = (lo >> 60) ? uint32_t(lo >> 60) : 16u;
+            // A strip of the batch: PACKED, ST, RGBAQ and XYZF2 (or XYZ2) a vertex, as many as the batch's
+            int st = -1, rgbaq = -1, xyz = -1, uv = -1;
+            for (uint32_t i = 0; i < nreg; ++i)
+                switch ((regs >> (4 * i)) & 15u)
+                {
+                case 0x2: st = static_cast<int>(i); break;
+                case 0x1: rgbaq = static_cast<int>(i); break;
+                case 0x3: uv = static_cast<int>(i); break;
+                case 0x4: case 0x5: xyz = static_cast<int>(i); break;
+                default: break;
+                }
+            bool strip = flg == 0 && xyz >= 0 && uv < 0 && loops == r.count && r.count >= 3;
+            std::vector<bozo::render::Vertex> corners;
+            std::vector<bool> adc;
+            if (strip)
+            {
+                ++g_replayStats.strips;
+                corners.resize(loops);
+                adc.resize(loops);
+                const bool xyzf = ((regs >> (4 * xyz)) & 15u) == 0x4u;
+                for (uint32_t k = 0; k < loops && strip; ++k)
+                {
+                    auto field = [&](int reg) {
+                        std::array<uint32_t, 4> w;
+                        std::memcpy(w.data(), p.data() + 16 * (1 + k * nreg + static_cast<uint32_t>(reg)), 16);
+                        return w;
+                    };
+                    const auto x = field(xyz);
+                    // the packet's vertex on the screen against the batch's: the same vertex, or not this strip
+                    const float px = float(x[0] & 0xFFFFu) / 16.0f, py = float(x[1] & 0xFFFFu) / 16.0f;
+                    if (std::fabs(px - r.screen[k][0]) > 0.5f || std::fabs(py - r.screen[k][1]) > 0.5f)
+                    {
+                        strip = false;
+                        ++g_replayStats.misaligned;
+                        break;
+                    }
+                    bozo::render::Vertex &c = corners[k];
+                    c.x = r.position[k][0];
+                    c.y = r.position[k][1];
+                    c.z = r.position[k][2];
+                    if (st >= 0)
+                    {
+                        const auto s = field(st);
+                        float S, T, Q;
+                        std::memcpy(&S, &s[0], 4);
+                        std::memcpy(&T, &s[1], 4);
+                        std::memcpy(&Q, &s[2], 4);
+                        c.u = Q != 0.0f ? S / Q : S;
+                        c.v = Q != 0.0f ? T / Q : T;
+                    }
+                    if (rgbaq >= 0)
+                    {
+                        const auto cw = field(rgbaq);
+                        c.rgba = (cw[0] & 0xFFu) | (cw[1] & 0xFFu) << 8 | (cw[2] & 0xFFu) << 16 | (cw[3] & 0xFFu) << 24;
+                    }
+                    c.fog = xyzf ? float((x[3] >> 4) & 0xFFu) / 255.0f : 1.0f;
+                    c.q = 1.0f;
+                    adc[k] = (x[3] >> 15) & 1u;
+                }
+            }
+            if (strip)
+            {
+                std::vector<bozo::render::Vertex> triangles;
+                triangles.reserve(3 * loops);
+                for (uint32_t k = 2; k < loops; ++k)
+                    if (!adc[k])
+                    {
+                        triangles.push_back(corners[k - 2]);
+                        triangles.push_back(corners[k - 1]);
+                        triangles.push_back(corners[k]);
+                    }
+                const uint64_t prim = (lo >> 46) & 1u ? (lo >> 47) & 0x7FFu : ~0ull;
+                if (!triangles.empty())
+                    gs::nativeTriangles(prim, r.matrix, triangles.data(), static_cast<uint32_t>(triangles.size()));
+                else if (prim != ~0ull)
+                    gs::writeRegister(0x00, prim);
+                ++g_replayStats.native;
+                continue;
+            }
+            // anything else as the GS takes it
+            ++g_replayStats.other;
+            std::memcpy(memory.data(), p.data(), std::min<size_t>(p.size(), memory.size()));
+            gs::path1(memory.data(), 0);
+        }
+        r.packets.clear();
+    }
+
     void report()
     {
         if (mode() == Mode::Off)
@@ -595,6 +754,11 @@ namespace shino::native3d
                         (unsigned long long)g_out.byField[1], (unsigned long long)g_out.byField[2], (unsigned long long)g_out.byField[3],
                         (unsigned long long)g_out.byField[4], (unsigned long long)g_out.byField[5], (unsigned long long)g_out.byField[6]);
         }
+        if (g_replayStats.batches)
+            std::printf("; replayed %llu batches: strips %llu (%llu drawn natively, %llu not the batch's on the screen), %llu other packets",
+                        (unsigned long long)g_replayStats.batches, (unsigned long long)g_replayStats.strips,
+                        (unsigned long long)g_replayStats.native, (unsigned long long)g_replayStats.misaligned,
+                        (unsigned long long)g_replayStats.other);
         std::printf("%c", 10);
     }
 }

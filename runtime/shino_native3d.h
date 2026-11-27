@@ -41,4 +41,7 @@ namespace shino::native3d
     // RGBAQ and XYZF2) to compare with the native batch's (compare()).
     bool capturing();
     void captureKick(const uint8_t *vuMemory, uint32_t address);
+    // A replayed variant having run (its kicks held and kept): its packets replayed in order, each strip of the batch
+    // drawn natively, the rest sent to the GS translator.
+    void finish(const vu::Unit &v);
 }

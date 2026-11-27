@@ -177,6 +177,22 @@ writes there. Natively it needs the variant's kicks replayed in order (the regis
 from the batch's own positions): the native mode now drops every kick of a taken-over variant, register packets too,
 so 657 stays on the GS path for now.
 
+## Stage 1d: replayed variants (2026-11-27)
+
+The variants not read yet are replayed: the program stops at the variant as for the others, the batch's positions,
+screen points and matrix are kept, the variant runs with its kicks held and each GIF packet it sends is kept whole, in
+order (`captureKick`); then (`finish`) the packets go out in that order: a PACKED strip of the batch's length whose
+vertices land on the batch's own screen points (within half a pixel) is drawn natively from the batch's positions with
+the packet's ST / Q, RGBA, fog and ADC; any other packet (A+D registers, a clipper's output, a strip that does not
+line up) goes to the GS translator as it is. A wrong guess about a variant's layout can only send its packets the old
+way. Replayed: set `0x599510`'s two-pass 657 (FOGCOL / TEX0_1, then FOGCOL / TEX0_2 with a second UV set), the main
+renderer's 1438, the characters' 1113, set `0x59d290`'s 520 and set `0x5e7cd0`'s 1044.
+
+On a mission day (22.3M native batches): 718,714 batches replayed, 1.32M strips, 98.5% drawn natively, the rest the
+old way; no fault. Frame-exact captures of the town and the final fight: 0.9 to 1.2% of the pixels differ, at edges.
+The replayed strips' attributes still come from the VU's packets: drawing them from the batch too (as for the main
+variants) is the next step for each.
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter

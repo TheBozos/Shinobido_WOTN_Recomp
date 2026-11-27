@@ -974,6 +974,7 @@ namespace shino
                         g_noKick = true;
                         compiledFrom(takeOver);
                         g_noKick = false;
+                        native3d::finish(v);
                     }
                 }
             }
