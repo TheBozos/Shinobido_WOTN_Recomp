@@ -55,6 +55,35 @@ software-pipelined variants by the object's flags (`ilw vi2, 1023`: pairs 434 to
 it by the object's rows (vf6-vf11), divides by w, makes fog and the lit colour (vf20-vf22 against the normal), clip
 tests, and writes STQ / RGBAQ / XYZF into a GS packet it kicks.
 
+## The main renderer (set `0x539c40`), read so far
+
+**Which variants run** (600 frames of play from the frame-5200 state, 1023.x at each program start): the vertex
+program `0x3968` ran 100,512 times with flags `0xb`, 4,648 with `0xa`, 537 with `0xf`; the setup picks the same entry
+(pair 1023, `isw.y vi12, 1023`) for `0xa` and `0xb`, so one variant draws 95% of this set. (The second set's
+`0x3c38`: 78,191 with flags `0x9`, 3,808 with `0xb`.)
+
+**An object's constants** (VU1 memory at the setup's start):
+- 976-979: the object's world matrix (rotation rows, then the translation; w 1);
+- 980 on: the light list (below); 980.w 0 is none;
+- 1018: the GIF tag the vertices go out with, PRIM `0x5c` (triangle strips, Gouraud, textured, alpha-blended; PRE),
+  registers ST, RGBAQ, XYZF2;
+- 1019: the material colour (about 1.0, alpha 0.5);
+- 1020: 255 (the colour clamp);
+- 1021-1022: fog (261, 0.0038, -2.0, 2500 / 261, 0.0038, 1.0, 1);
+- 1023.x: the flags (bit 1 lit, bit 3 ...), 1023.y the variant's entry the setup writes.
+
+**The setup program** first unpacks the vertex buffer at TOPS (colours and normals from bytes: `itof0`, x 1/128),
+blends two vertex sets where the object morphs (`mulaw / maddx` with vf27's weights), then walks the light list:
+`ilwr.w vi3, (vi2)` is a light's type, its next two quadwords a direction or position and a colour. Types 1, 2, 128,
+129 and 130 have their own loops (an ambient term added to every vertex; a directional N.L with the vertex normal;
+a point light from its position; ...); type 0 ends the list: every vertex colour clamped to 255 and multiplied by the
+material colour (1019). The colours are per vertex, made before the vertex program runs: a native renderer can make
+them on the CPU the same way.
+
+Still to settle: this lighting loop steps four quadwords a vertex, the mesh decoded above five (that one is likely the
+second set's, the characters'); the vertex variant at pair 1023 itself (transform by 976-979 and the camera, fog,
+clipping, strips and their restarts).
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter
