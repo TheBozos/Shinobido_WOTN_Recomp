@@ -1221,7 +1221,7 @@ namespace shino::native3d
         }
         // The packets the program builds, quadword by quadword (its output from TOP + 192), and the draw.
         void screenTriangles(const vu::Unit &v, uint32_t top, uint32_t count, std::vector<std::array<uint32_t, 4>> &packets,
-                             std::vector<bozo::render::Vertex> &vertices)
+                             std::vector<gs::ScreenVertex> &vertices)
         {
             packets.clear();
             vertices.clear();
@@ -1254,16 +1254,17 @@ namespace shino::native3d
                     packets.push_back(stWords);
                     packets.push_back(rgbaWords);
                     packets.push_back(xyzWords);
-                    // drawn as the GS takes it: the point at 1/16 of a pixel, Z as written, S / Q and T / Q
-                    bozo::render::Vertex out;
-                    out.x = float(static_cast<int32_t>(xyzWords[0] & 0xFFFFu)) / 16.0f;
-                    out.y = float(static_cast<int32_t>(xyzWords[1] & 0xFFFFu)) / 16.0f;
-                    out.z = float(xyzWords[2]);
-                    out.u = st[2] != 0.0f ? st[0] / st[2] : st[0];
-                    out.v = st[2] != 0.0f ? st[1] / st[2] : st[1];
+                    // the vertex as the GS takes it from the packet
+                    gs::ScreenVertex out;
+                    out.x = xyzWords[0] & 0xFFFFu;
+                    out.y = xyzWords[1] & 0xFFFFu;
+                    out.z = (xyzWords[2] >> 4) & 0xFFFFFFu; // (XYZF2: Z in bits 4-27)
+                    out.fog = (xyzWords[3] >> 4) & 0xFFu;
+                    out.adc = (xyzWords[3] >> 15) & 1u;
                     out.rgba = (rgbaWords[0] & 0xFFu) | (rgbaWords[1] & 0xFFu) << 8 | (rgbaWords[2] & 0xFFu) << 16 | (rgbaWords[3] & 0xFFu) << 24;
-                    out.fog = 1.0f;
-                    out.q = 1.0f;
+                    out.s = st[0];
+                    out.t = st[1];
+                    out.q = st[2];
                     vertices.push_back(out);
                 }
             }
@@ -1285,24 +1286,363 @@ namespace shino::native3d
         const uint32_t out = (top + 192u) & 0xFFFFu;
         std::memcpy(v.data + 16u * 1023u + 12u, &out, 4); // ISW.w vi11, 1023
         static std::vector<std::array<uint32_t, 4>> packets;
-        static std::vector<bozo::render::Vertex> vertices;
+        static std::vector<gs::ScreenVertex> vertices;
         screenTriangles(v, top, itop, packets, vertices);
         g_screen.triangles += itop;
+        // the packets in VU1 memory as the program leaves them (ST by SQ.xyz: its w kept), and the end (ISWR.x 0x8000)
+        for (size_t k = 0; k < packets.size(); ++k)
+        {
+            const bool st = k % 10 != 0 && (k % 10) % 3 == 1;
+            std::memcpy(v.data + 16u * ((out + k) & 0x3FFu), packets[k].data(), st ? 12 : 16);
+        }
+        const uint32_t end = 0x8000u;
+        std::memcpy(v.data + 16u * ((out + packets.size()) & 0x3FFu), &end, 4);
+        if (submit)
+            gs::screenPrimitives(word(v, 1018, 1) >> 15 & 0x7FFu, vertices.data(), static_cast<uint32_t>(vertices.size()));
+        return true;
+    }
+
+    // ---- 2D: set 0x601710's particles ------------------------------------------------------------------------------
+    // Its setup (MSCAL 0) makes the camera's rows (x and y less half of w, times the screen scale and 1006.y / 1007.y),
+    // the sprites' size factors (1005.xy x those), the depth clamps (the near one 1014.w + 255 / 1014.z, the far one
+    // 1014.w), the fog's and the clip test's depth offsets (1016 + 1017, 1014; +3072.1 in w: ADC), the colour's bias
+    // ((1 - 1019) x 2^23: the colour's integer in a float's low bits) and the count of chunks (1005.z); each chunk is a
+    // program (the next by MSCNT at 0x2d8; its two output buffers, 416 and 677, in turn) of ITOP particles (1005.w the
+    // last's): at TOP the positions, at +52 the UVs, +104 the colours, +156 the sizes (their strides 1003.xyz). A
+    // particle is a sprite: its corners the transformed centre less and plus the size, w clamped to the depth range, Q
+    // = 1 / w, XY and Z by Q and the scales, F from w; ST (uv.z, uv.w, 1) then (uv.x, uv.y) by SQ.xy (the second
+    // corner's Q the word left in the buffer); the second corner ADC when a corner is outside a clip plane. Each step
+    // as the VU's arithmetic (clamped), from the program read pair by pair.
+    namespace
+    {
+        using F4 = std::array<float, 4>;
+        struct SpriteSetup
+        {
+            F4 r28, r29, r30, r31, v21, v22, v23, v24, v25, v26;
+            float v27w = 0;
+        };
+        struct SpriteState
+        {
+            bool valid = false;
+            SpriteSetup s;
+            int16_t chunks = -1; // vi15
+            uint16_t b12 = 0, b13 = 416, b14 = 677;
+        } g_sprites;
+        struct SpriteStats
+        {
+            uint64_t programs = 0, particles = 0, compared = 0, differs = 0;
+        } g_spriteStats;
+        struct SpriteChunk
+        {
+            bool chunk = false;
+            uint32_t at = 0, top = 0, count = 0;
+        } g_spriteLast; // the chunk made last (verify)
+        const vu::Image *spriteImage()
+        {
+            static const vu::Image *im = imageOf(0x601710u);
+            return im;
+        }
+        float vmax(float a, float b) { return vu::clampF(b > a ? b : a); } // MAX: max_ps(ft, fs)
+        float vmin(float a, float b) { return vu::clampF(b < a ? b : a); } // MINI: min_ps(ft, fs)
+        SpriteSetup spriteSetup(const vu::Unit &v)
+        {
+            const auto C = vu::clampF;
+            auto M = [&](uint32_t q) { return F4{lane(v, q, 0), lane(v, q, 1), lane(v, q, 2), lane(v, q, 3)}; };
+            SpriteSetup s;
+            F4 v28 = M(1008), v29 = M(1009), v30 = M(1010), v31 = M(1011), v2 = M(1007), v1 = M(1006), v24 = M(1016), v4 = M(1017);
+            F4 v23 = M(1015), v3 = M(1014), v26 = M(1005), v21 = M(1019), v7{}, v25{};
+            const float half = 0.5f;
+            const float w21 = C(v28[3] * half), w22 = C(v29[3] * half), w23 = C(v30[3] * half), w5 = C(v31[3] * half);
+            for (int i = 0; i < 2; ++i)
+            {
+                v28[i] = C(v28[i] - w21);
+                v29[i] = C(v29[i] - w22);
+                v30[i] = C(v30[i] - w23);
+                v31[i] = C(v31[i] - w5);
+            }
+            const float q0 = vu::divideResult(0, 1.0f, v1[2]);
+            {
+                const float v1y = C(0.0f + v2[0]), v2x = v1[1]; // ADDx.y vf1 / MR32.x vf2, in one pair
+                v1[1] = v1y;
+                v2[0] = v2x;
+            }
+            v24[0] = C(v24[0] + v4[0]);
+            v24[1] = C(v24[1] + v4[1]);
+            v28[2] = v28[3];
+            v7[0] = v2[0];
+            v7[1] = v2[1]; // MOVE.xy vf7, vf2 before MUL.xy vf2 (one pair)
+            v2[0] = C(v2[0] * v23[0]);
+            v2[1] = C(v2[1] * v23[1]);
+            v23[3] = C(1.0f * v3[2]);
+            v29[2] = v29[3];
+            v23[2] = C(v23[2] * q0);
+            v30[2] = v30[3];
+            v3[2] = C(0.0f - v3[2]);
+            v31[2] = v31[3];
+            float acc[4] = {0, 0, C(v24[2] + 0.0f), 0};
+            for (int i = 0; i < 3; ++i)
+                v28[i] = C(v28[i] * v2[i]);
+            v24[3] = v3[3];
+            v24[2] = C(acc[2] - v2[2] * v23[2]);
+            v26[3] = v3[3];
+            for (int i = 0; i < 3; ++i)
+                v29[i] = C(v29[i] * v2[i]);
+            v26[2] = v3[3];
+            for (int i = 0; i < 3; ++i)
+                v30[i] = C(v30[i] * v2[i]);
+            v23[0] = v1[0];
+            v23[1] = v1[1];
+            const float v8[3] = {0.0f, 0.0f, 1.0f};
+            for (int i = 0; i < 3; ++i)
+                acc[i] = C(v1[i] * v8[i]);
+            F4 v1b = M(1004);
+            v26[0] = C(v26[0] * v7[0]);
+            v26[1] = C(v26[1] * v7[1]);
+            const float q1 = vu::divideResult(0, 1.0f, v3[2]);
+            v24[3] = C(v24[3] * v3[2]);
+            for (int i = 0; i < 3; ++i)
+                v31[i] = C(acc[i] + v31[i] * v2[i]);
+            v26[2] = C(0.0f + 255.0f);
+            v1b[0] = C(v1b[0] * v26[0]);
+            v1b[1] = C(v1b[1] * v26[1]);
+            for (int i = 0; i < 3; ++i)
+                v25[i] = v24[i];
+            acc[2] = C(0.0f + v3[3]);
+            F4 v22;
+            for (int i = 0; i < 4; ++i)
+                v22[i] = C(1.0f - v21[i]);
+            v25[3] = C(v24[3] + 3072.1f);
+            v1b[0] = C(v1b[0] + v1b[0]);
+            v1b[1] = C(v1b[1] + v1b[1]);
+            v26[2] = C(acc[2] - v26[2] * q1);
+            for (int i = 0; i < 4; ++i)
+                v22[i] = C(v22[i] * 8388608.0f);
+            s.v27w = C(v23[3] * 1.0f);
+            v31[1] = C(v31[1] + v1b[1]);
+            v31[0] = C(v31[0] - v1b[0]);
+            s.r28 = v28;
+            s.r29 = v29;
+            s.r30 = v30;
+            s.r31 = v31;
+            s.v21 = v21;
+            s.v22 = v22;
+            s.v23 = v23;
+            s.v24 = v24;
+            s.v25 = v25;
+            s.v26 = v26;
+            return s;
+        }
+        uint32_t clipBits(const float *p, float w)
+        {
+            const float aw = std::fabs(w);
+            return (p[0] > aw ? 1u : 0u) | (p[0] < -aw ? 2u : 0u) | (p[1] > aw ? 4u : 0u) | (p[1] < -aw ? 8u : 0u) |
+                   (p[2] > aw ? 16u : 0u) | (p[2] < -aw ? 32u : 0u);
+        }
+        uint32_t floatBits(float f)
+        {
+            uint32_t u;
+            std::memcpy(&u, &f, 4);
+            return u;
+        }
+        // One chunk's packets: the tag, then five quadwords a particle (the masks of their stores) and the vertices drawn.
+        void spriteChunk(const vu::Unit &v, const SpriteSetup &s, uint32_t top, uint32_t count,
+                         std::vector<std::array<uint32_t, 4>> &packets, std::vector<uint8_t> &masks, std::vector<gs::ScreenVertex> &vertices)
+        {
+            const auto C = vu::clampF;
+            packets.clear();
+            masks.clear();
+            vertices.clear();
+            std::array<uint32_t, 4> tag;
+            std::memcpy(tag.data(), v.data + 16u * 1018u, 16);
+            tag[0] = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(static_cast<uint16_t>(count + 0x8000u)))); // MFIR.x
+            packets.push_back(tag);
+            masks.push_back(15);
+            uint32_t strides[3];
+            for (int i = 0; i < 3; ++i)
+                strides[i] = word(v, 1003, i) & 0xFFFFu;
+            uint32_t uvAt = top + 52u, colourAt = top + 104u, sizeAt = top + 156u;
+            for (uint32_t k = 0; k < count; ++k)
+            {
+                const float px = lane(v, top + k, 0), py = lane(v, top + k, 1), pz = lane(v, top + k, 2);
+                float a[4];
+                for (int i = 0; i < 4; ++i)
+                {
+                    const F4 *rows[4] = {&s.r31, &s.r28, &s.r29, &s.r30};
+                    float x = C(s.r31[i] + 0.0f);
+                    x = C(x + s.r28[i] * px);
+                    x = C(x + s.r29[i] * py);
+                    a[i] = C(x + s.r30[i] * pz);
+                    (void)rows;
+                }
+                const float size[4] = {lane(v, sizeAt, 0), lane(v, sizeAt, 1), 0.0f, 0.0f};
+                float c2[4], c3[4];
+                for (int i = 0; i < 4; ++i)
+                {
+                    c2[i] = C(a[i] - s.v26[i] * size[i]);
+                    c3[i] = C(a[i] + s.v26[i] * size[i]);
+                }
+                const float rawW = c2[3];
+                const float q = vu::divideResult(0, 1.0f, rawW);
+                c3[3] = vmin(rawW, s.v26[3]);
+                const uint32_t clip = clipBits(c2, rawW) | clipBits(c3, rawW);
+                c2[3] = vmax(c3[3], s.v26[2]);
+                c3[3] = vmax(c3[3], s.v26[2]);
+                const float v27[4] = {C(s.v23[0] * q), C(s.v23[1] * q), C(s.v23[2] * q), s.v27w};
+                const F4 &offsetB = clip ? s.v25 : s.v24;
+                std::array<uint32_t, 4> xyzA, xyzB;
+                for (int i = 0; i < 4; ++i)
+                {
+                    xyzA[i] = static_cast<uint32_t>(ftoi(C(C(c2[i] * v27[i]) + s.v25[i]), 16.0f));
+                    xyzB[i] = static_cast<uint32_t>(ftoi(C(C(c3[i] * v27[i]) + offsetB[i]), 16.0f));
+                }
+                // the colour: the bias plus 1019 times it (its bits)
+                std::array<uint32_t, 4> colour;
+                for (int i = 0; i < 4; ++i)
+                    colour[i] = floatBits(C(C(s.v22[i] + 0.0f) + s.v21[i] * lane(v, colourAt, i)));
+                const float uv[4] = {lane(v, uvAt, 0), lane(v, uvAt, 1), lane(v, uvAt, 2), lane(v, uvAt, 3)};
+                const std::array<uint32_t, 4> stA = {floatBits(uv[2]), floatBits(uv[3]), floatBits(1.0f), floatBits(1.0f)};
+                const std::array<uint32_t, 4> stB = {floatBits(uv[0]), floatBits(uv[1]), 0u, 0u};
+                packets.push_back(stA);
+                masks.push_back(15);
+                packets.push_back(colour);
+                masks.push_back(15);
+                packets.push_back(xyzA);
+                masks.push_back(15);
+                packets.push_back(stB);
+                masks.push_back(3); // SQ.xy
+                packets.push_back(xyzB);
+                masks.push_back(15);
+                uvAt += strides[0];
+                colourAt += strides[1];
+                sizeAt += strides[2];
+            }
+        }
+        // The vertices from the packets as they stand in VU1 memory (the second corner's Q the word there)
+        void spriteVertices(const vu::Unit &v, uint32_t at, uint32_t count, std::vector<gs::ScreenVertex> &vertices)
+        {
+            vertices.clear();
+            for (uint32_t k = 0; k < count; ++k)
+            {
+                const uint32_t p = at + 1u + 5u * k;
+                auto W = [&](uint32_t q, int i) { return word(v, p + q, i); };
+                const uint32_t rgba = (W(1, 0) & 0xFFu) | (W(1, 1) & 0xFFu) << 8 | (W(1, 2) & 0xFFu) << 16 | (W(1, 3) & 0xFFu) << 24;
+                for (int corner = 0; corner < 2; ++corner)
+                {
+                    const uint32_t st = corner ? 3u : 0u, xyz = corner ? 4u : 2u;
+                    gs::ScreenVertex x;
+                    x.x = W(xyz, 0) & 0xFFFFu;
+                    x.y = W(xyz, 1) & 0xFFFFu;
+                    x.z = (W(xyz, 2) >> 4) & 0xFFFFFFu;
+                    x.fog = (W(xyz, 3) >> 4) & 0xFFu;
+                    x.adc = (W(xyz, 3) >> 15) & 1u;
+                    x.rgba = rgba;
+                    x.s = lane(v, p + st, 0);
+                    x.t = lane(v, p + st, 1);
+                    x.q = lane(v, p + st, 2);
+                    vertices.push_back(x);
+                }
+            }
+        }
+    }
+
+    bool spriteProgram(vu::Unit &v, uint32_t pc, uint32_t top, uint32_t itop, bool submit, bool verifying)
+    {
+        const vu::Image *im = spriteImage();
+        if (!im || v.vu0 || (pc != 0 && pc != 0x2d8u && pc != 0x300u) || im->start != 0 || im->count < 97)
+            return false;
+        for (const uint32_t p : {0u, 33u, 66u, 91u, 96u})
+            if (v.micro[2 * p] != im->code[2 * p] || v.micro[2 * p + 1] != im->code[2 * p + 1])
+                return false;
+        SpriteState &st = g_sprites;
+        g_spriteLast.chunk = false;
+        if (pc == 0x300u)
+        {
+            if (!verifying)
+                v.tpc = 0x300u; // (B 0x2f0: E again)
+            return true;
+        }
+        if (pc == 0)
+        {
+            st.s = spriteSetup(v);
+            st.valid = true;
+            st.chunks = static_cast<int16_t>((word(v, 1005, 2) & 0xFFFFu) - 1u);
+            st.b13 = 416;
+            st.b14 = 677;
+        }
+        else
+        {
+            if (!st.valid)
+                return false; // (a continuation of a setup the VU ran)
+            const uint16_t old14 = st.b14;
+            st.b14 = st.b12;
+            st.b13 = old14;
+        }
+        ++g_spriteStats.programs;
+        if (st.chunks < 0)
+        {
+            if (!verifying)
+                v.tpc = 0x300u; // E at 0x2f0
+            return true;
+        }
+        const uint32_t count = st.chunks > 0 ? itop : (word(v, 1005, 3) & 0xFFFFu);
+        static std::vector<std::array<uint32_t, 4>> packets;
+        static std::vector<uint8_t> masks;
+        static std::vector<gs::ScreenVertex> vertices;
+        spriteChunk(v, st.s, top, count, packets, masks, vertices);
+        g_spriteStats.particles += count;
+        g_spriteLast = {true, st.b14, top, count};
+        if (!verifying) // the packets in VU1 memory as the program leaves them (the masks of its stores)
+            for (size_t k = 0; k < packets.size(); ++k)
+                for (int i = 0; i < 4; ++i)
+                    if ((masks[k] >> i) & 1u)
+                        std::memcpy(v.data + 16u * ((st.b14 + k) & 0x3FFu) + 4u * i, &packets[k][i], 4);
         if (submit)
         {
-            const uint32_t tag1 = word(v, 1018, 1);
-            const uint64_t prim = (tag1 >> 14) & 1u ? uint64_t((tag1 >> 15) & 0x7FFu) : ~0ull;
-            static const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-            gs::nativeTriangles(prim, identity, vertices.data(), static_cast<uint32_t>(vertices.size()));
+            spriteVertices(v, st.b14, count, vertices);
+            gs::screenPrimitives(word(v, 1018, 1) >> 15 & 0x7FFu, vertices.data(), static_cast<uint32_t>(vertices.size()));
+        }
+        st.b12 = st.b13;
+        --st.chunks;
+        if (!verifying) // (verifying: the VU's own run follows from the unit as it is)
+        {
+            v.vi[12] = st.b12;
+            v.vi[13] = st.b13;
+            v.vi[14] = st.b14;
+            v.vi[15] = static_cast<uint16_t>(st.chunks);
+            v.tpc = 0x2d8u;
         }
         return true;
+    }
+
+    void compareSprites(const vu::Unit &v)
+    {
+        // The VU's packets where the chunk went (vi14) against the ones built here (the second ST's z and w not written)
+        if (!g_spriteLast.chunk)
+            return;
+        const uint32_t at = g_spriteLast.at;
+        static std::vector<std::array<uint32_t, 4>> packets;
+        static std::vector<uint8_t> masks;
+        static std::vector<gs::ScreenVertex> vertices;
+        spriteChunk(v, g_sprites.s, g_spriteLast.top, g_spriteLast.count, packets, masks, vertices);
+        ++g_spriteStats.compared;
+        uint32_t words = 0;
+        for (size_t k = 0; k < packets.size(); ++k)
+            for (int i = 0; i < 4; ++i)
+            {
+                if (!((masks[k] >> i) & 1u))
+                    continue;
+                const uint32_t vu = word(v, at + k, i);
+                if (vu != packets[k][i] && ++words <= 4 && g_spriteStats.differs < 6)
+                    std::printf("[shino:native2d] sprite packet %zu.%c: native %08x, the VU's %08x%c", k, "xyzw"[i], packets[k][i], vu, 10);
+            }
+        g_spriteStats.differs += words != 0;
     }
 
     void compareScreen(const vu::Unit &v, uint32_t top, uint32_t itop)
     {
         // The VU's packets (TOP + 192 on) against the ones built here: every word but ST's w (SQ.xyz leaves it as it was)
         static std::vector<std::array<uint32_t, 4>> packets;
-        static std::vector<bozo::render::Vertex> vertices;
+        static std::vector<gs::ScreenVertex> vertices;
         screenTriangles(v, top, itop, packets, vertices);
         ++g_screen.compared;
         uint32_t words = 0;
@@ -1539,6 +1879,12 @@ namespace shino::native3d
                         (unsigned long long)g_screen.triangles);
         if (g_screen.compared)
             std::printf("; 2D packets compared %llu: %llu differ", (unsigned long long)g_screen.compared, (unsigned long long)g_screen.differs);
+        if (g_spriteStats.programs)
+            std::printf("; particles (0x601710) %llu programs, %llu sprites natively", (unsigned long long)g_spriteStats.programs,
+                        (unsigned long long)g_spriteStats.particles);
+        if (g_spriteStats.compared)
+            std::printf("; particle packets compared %llu: %llu differ", (unsigned long long)g_spriteStats.compared,
+                        (unsigned long long)g_spriteStats.differs);
         if (g_replayStats.batches)
             std::printf("; replayed %llu batches: strips %llu (%llu drawn natively, %llu not the batch's on the screen), %llu other packets",
                         (unsigned long long)g_replayStats.batches, (unsigned long long)g_replayStats.strips,

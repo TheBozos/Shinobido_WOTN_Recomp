@@ -52,6 +52,10 @@ namespace shino::native3d
     bool screenProgram(vu::Unit &v, uint32_t pc, uint32_t top, uint32_t itop, bool submit);
     // Verify: the VU having run it, its packets against the ones built here.
     void compareScreen(const vu::Unit &v, uint32_t top, uint32_t itop);
+    // Set 0x601710's particle sprites made here whole (verifying: its packets not written, the VU's run to come).
+    bool spriteProgram(vu::Unit &v, uint32_t pc, uint32_t top, uint32_t itop, bool submit, bool verifying);
+    // Verify: the VU having run the chunk, its packets against the ones built here.
+    void compareSprites(const vu::Unit &v);
     // Verify: the VU having run the program, its VU1 memory (the inputs and constants) against native's.
     void compareObject(const vu::Unit &v, const uint8_t *native);
     // A program of a renderer drawn natively starts: its batch is at TOP (top), ITOP (itop) vertices.

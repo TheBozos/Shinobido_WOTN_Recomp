@@ -1108,6 +1108,43 @@ namespace shino::gs
     void imageFlush();
     void imageQuadword(const uint8_t *quadword);
 
+    void screenPrimitives(uint64_t prim, const ScreenVertex *vertices, uint32_t count)
+    {
+        writeRegister(0x00, prim);
+        const uint64_t attrs = (g_s.prmodecont & 1u) ? g_s.prim : (g_s.prmode & ~7ull) | (g_s.prim & 7u);
+        const Context &c = g_s.ctx[(attrs >> 9) & 1u];
+        const uint32_t type = attrs & 7u;
+        static const uint32_t need[8] = {1, 2, 2, 3, 3, 3, 2, 1};
+        GsVertex g[3];
+        for (uint32_t i = 0; i + need[type] <= count; i += need[type])
+        {
+            for (uint32_t j = 0; j < need[type]; ++j)
+            {
+                const ScreenVertex &w = vertices[i + j];
+                GsVertex &v = g[j];
+                v.x = (float(w.x & 0xFFFFu) - float(c.xyoffset & 0xFFFFu)) / 16.0f;
+                v.y = (float(w.y & 0xFFFFu) - float((c.xyoffset >> 32) & 0xFFFFu)) / 16.0f;
+                v.z = w.z;
+                v.fog = w.fog;
+                v.rgba = w.rgba;
+                v.q = w.q;
+                v.u = w.s;
+                v.v = w.t;
+            }
+            if (!vertices[i + need[type] - 1].adc)
+                emit(g, need[type], type, attrs);
+        }
+        if (count) // the registers as the packets leave them
+        {
+            const ScreenVertex &l = vertices[count - 1];
+            g_s.rgbaq = l.rgba | (uint64_t(std::bit_cast<uint32_t>(l.q)) << 32);
+            g_s.s = l.s;
+            g_s.t = l.t;
+            g_s.q = l.q;
+            g_s.fog = l.fog;
+        }
+    }
+
     void nativeTriangles(uint64_t prim, const float matrix[16], const Vertex *vertices, uint32_t count)
     {
         if (prim != ~0ull)

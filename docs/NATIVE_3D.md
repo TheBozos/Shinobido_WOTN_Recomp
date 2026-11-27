@@ -371,7 +371,7 @@ objects). The VU diagnostics that rerun each program (`SHINO_VU_JUMPS`, `SHINO_V
 program trace keep the VU path. The town headless: 133.6 flips a second against 113.5 with it off (VU1 0.01M pairs a
 flip against 1.69M).
 
-## 2D: the screen-space triangles (2026-11-27)
+## 2D: the HUD's triangles and the particles (2026-11-27)
 
 What still went through the GS translator, by path (a count of the primitives each sent, the town and the final
 fight): set `0x4f3f60` (a 47-pair VU1 program: about 64 triangles a frame), VIF1 DIRECT (PATH2: about 32 primitives a
@@ -385,6 +385,25 @@ textured, Gouraud, blended), ST = (s q, t q, q), RGBA = ftoi0(colour x 1019), XY
 VU code run; 1023.w and TPC left as the program leaves them. Verify builds the packets here and compares them with the
 VU's, every word but ST's unused w: the town (11,571 programs) and the fight (10,197), none different; the HUD (the
 health bar, the eye, the compass) the same on the screen.
+
+**The particles** (set `0x601710`, read pair by pair): its setup (MSCAL 0) makes the camera's rows (x and y less half of
+w, times the screen scale and 1006.y / 1007.y), the sprites' size factors (1005.xy times those), the depth clamps (1014.w
++ 255 / 1014.z and 1014.w), the depth and fog offsets (1016 + 1017, 1014; +3072.1 in w: the ADC bit), a colour bias
+((1 - 1019) x 2^23: the colour's integer in a float's low bits) and the count of chunks (1005.z); each chunk is a
+program (the next by MSCNT at `0x2d8`, its output buffer 416 or 677 in turn) of ITOP particles (1005.w the last's), at
+TOP the positions, +52 the UVs, +104 the colours, +156 the sizes (strides 1003.xyz). A particle is a sprite: its corners
+the transformed centre less and plus the size, w clamped, Q = 1 / w, XY and Z by Q and the scales, F from w; ST (uv.z,
+uv.w, 1) then (uv.x, uv.y) by `SQ.xy` (the second corner's Q the word left in the buffer); the second corner ADC when
+either corner is outside a clip plane. Natively (`native3d::spriteProgram`): the setup's constants and the chunk count
+and buffers kept from program to program, each chunk's packets written to VU1 memory as the VU writes them, the sprites
+drawn from them.
+
+Both 2D programs draw through `gs::screenPrimitives`: vertices already the GS's (12.4 XY, Z, F, RGBA, S T Q, ADC)
+filed as the GS translator files its own (its sprites, its Q), the GS's registers left as the packets would leave them.
+Verify (`SHINO_NATIVE_3D=verify`): the particles' packets (every word the VU writes) identical in the fight (1,253
+chunks); the GS translator's checksum the same with the 2D native and on the VU (`SHINO_NATIVE_2D=0`), the town and the
+fight, flips 250 and 500. A mission day: 944,541 HUD programs (1.91M triangles) and 25,930 particles natively, no
+fault. What is left on the GS translator: the screen clears (VIF1 DIRECT) and set `0x59d290`'s 520.
 
 ## The plan
 

@@ -1113,8 +1113,10 @@ namespace shino
             const uint8_t *stops = !v.vu0 && !g_traceThis && !verifying && !vuDiagnostic && nativeMode != native3d::Mode::Off && compiledOn()
                                        ? native3d::takeOverAt(v)
                                        : nullptr;
-            // The 2D program (set 0x4f3f60) made natively; verify (SHINO_NATIVE_3D=verify): the VU's run, its packets compared.
-            if (!v.vu0 && !g_traceThis && !verifying && !vuDiagnostic && nativeMode != native3d::Mode::Off && compiledOn())
+            // The 2D programs (sets 0x4f3f60 and 0x601710) made natively (SHINO_NATIVE_2D=0: on the VU); verify
+            // (SHINO_NATIVE_3D=verify): the VU's run, its packets compared.
+            static const bool native2d = !(std::getenv("SHINO_NATIVE_2D") && *std::getenv("SHINO_NATIVE_2D") == '0');
+            if (native2d && !v.vu0 && !g_traceThis && !verifying && !vuDiagnostic && nativeMode != native3d::Mode::Off && compiledOn())
             {
                 const uint32_t top = g_cv->top, itop = g_cv->itop;
                 if (nativeMode == native3d::Mode::Verify)
@@ -1126,8 +1128,15 @@ namespace shino
                             native3d::compareScreen(v, top, itop);
                         return;
                     }
+                    // the particles: the chunk made here (the unit left alone), then by the VU, the packets compared
+                    if (native3d::spriteProgram(v, pc, top, itop, false, true))
+                    {
+                        compiledFrom(pc);
+                        native3d::compareSprites(v);
+                        return;
+                    }
                 }
-                else if (native3d::screenProgram(v, pc, top, itop, true))
+                else if (native3d::screenProgram(v, pc, top, itop, true) || native3d::spriteProgram(v, pc, top, itop, true, false))
                     return;
             }
             static std::vector<uint8_t> objectBefore, objectNative;
