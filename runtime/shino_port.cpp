@@ -8,7 +8,10 @@
 #include "shino_port.h"
 #include "bozo/ee/dispatcher.h"
 #include "bozo/ee/kernel.h"
+#include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <unordered_map>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -57,10 +60,75 @@ namespace shino
             ctx->pc = ctx->r[31].uw[0];
         }
 
+        // The ninja's gravity at any frame rate (docs/RECOMP_NOTES.md, 60 frames a second). His vertical velocity (+0x314)
+        // is stepped each frame by 0x110140 (the other characters' by 0x3a25a0, the same law), v += g(v) h (g -450, or -100 - 0.4 |v| while |v| is 15 or less: the top of a
+        // jump; a fifth of that gliding), and his height by the new v h after it. On the console the step h is 0.04 (25
+        // frames a second): his height runs straight from frame to frame, the slope of each 0.04 s the velocity of that
+        // step, which g chose at its start. Here a shadow of that steps at 0.04 s in the frames' own time, and each frame
+        // stores the velocity that moves him as far as the console would in that frame's time: his height is the
+        // console's, sampled more often (the top's weaker gravity and its overshoot included). A velocity the game's other
+        // code wrote since (the take-off's, the landing's) starts the shadow again from it. At the console's step the
+        // game's own store.
+        bool gravityStep(uint8_t *rdram, R5900Context *ctx, int valueRegister, float factor, int objectRegister = 17)
+        {
+            constexpr float kConsoleStep = 0.04f;
+            // only when the port runs the game at another rate than the console's (SHINO_60FPS, SHINO_FRAME_VBLANKS): at
+            // 25 frames a second the game's own steps, slow frames' longer ones included, as on the console
+            static const bool otherRate = (std::getenv("SHINO_60FPS") && *std::getenv("SHINO_60FPS") == '1') ||
+                                          (std::getenv("SHINO_FRAME_VBLANKS") && std::atoi(std::getenv("SHINO_FRAME_VBLANKS")) == 1);
+            const float h = ctx->f[20];
+            if (!otherRate || !(h > 0.0f) || std::fabs(h - kConsoleStep) < 1e-6f)
+                return false;
+            struct Shadow
+            {
+                uint32_t stored = 0;   // the velocity stored last (its bits)
+                float v = 0.0f;        // the console's velocity, the step under way
+                float into = 0.0f;     // time into that step
+            };
+            static std::unordered_map<uint32_t, Shadow> shadows;
+            const uint32_t object = ctx->r[objectRegister].uw[0], at = (object + 0x314u) & 0x1FFFFFFu;
+            uint32_t current;
+            std::memcpy(&current, rdram + at, 4);
+            Shadow &sh = shadows[object];
+            if (sh.stored != current) // written by the game's other code (or the first time): the console's velocity now
+            {
+                std::memcpy(&sh.v, &current, 4);
+                sh.into = 0.0f;
+            }
+            auto gravity = [&](float v) { return factor * (std::fabs(v) > 15.0f ? -450.0f : -100.0f + -0.4f * std::fabs(v)); };
+            float left = h, moved = 0.0f;
+            for (int guard = 0; left > 1e-7f && guard < 64; ++guard)
+            {
+                if (sh.into == 0.0f) // a console step begins: its velocity
+                    sh.v = sh.v + gravity(sh.v) * kConsoleStep;
+                const float dt = std::min(left, kConsoleStep - sh.into);
+                moved += sh.v * dt;
+                sh.into += dt;
+                left -= dt;
+                if (sh.into >= kConsoleStep - 1e-7f)
+                    sh.into = 0.0f;
+            }
+            const float v = moved / h;
+            ctx->f[valueRegister] = v;
+            std::memcpy(rdram + at, &v, 4);
+            sh.stored = ctx->fu[valueRegister];
+            return true;
+        }
+
         bool nativeInstruction(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
         {
             switch (pc)
             {
+            // 0x110140's gravity steps (gravityStep): the stores of the new vertical velocity
+            case 0x0011032cu: // native site: swc1 f0,0x314(s1): the jump's gravity
+            case 0x0011095cu: // native site: swc1 f0,0x314(s1): the jump's gravity
+                return gravityStep(rdram, ctx, 0, 1.0f);
+            case 0x001105b0u: // native site: swc1 f0,0x314(s1): gliding (a fifth)
+                return gravityStep(rdram, ctx, 0, 0.2f);
+            case 0x001104fcu: // native site: swc1 f1,0x314(s1): gliding up (a fifth), stopped at 0
+                return gravityStep(rdram, ctx, 1, 0.2f);
+            case 0x003a2640u: // native site: swc1 f0,0x314(s0): the other characters' gravity (0x3a25a0, its law 0x10d970)
+                return gravityStep(rdram, ctx, 0, 1.0f, 16);
             // 0x444e40, the render scheduler's set-up: VIF0 / VIF1 error masks (ERR.ME0, mask the interrupts of
             // VIF codes' I bits). No VIF: reads give 0, writes nothing.
             case 0x00444f38u: // native site: lw a0,0x3820(at): VIF0_ERR

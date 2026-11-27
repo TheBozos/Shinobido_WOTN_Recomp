@@ -818,3 +818,19 @@ frame `0x134010` averages the 8 and multiplies by +4. Measured:
 To check before it is a setting: what may count frames (menus, the HUD, effects, the in-engine cutscenes), the other
 hard-coded 0.02s (`0x174910`, ...), the movies (PAL mode 3: 50 Hz while they play), the sound, and the busiest scenes
 (the fight's day: 54 to 60 in the window).
+
+**Gravity at 60 (2026-11-27).** `SHINO_TRACE_TIME=1` prints each frame the game's clock (the timer's vblank count, +0x1c)
+and step and the ninja's position, so play at 25 and at 60 compares by game time. A standing jump: walking, guards and
+the rise matched, but the jump went 15.83 high and stayed up 0.70 s at 60 against 14.14 and 0.60 s at 25. The ninja's
+vertical velocity (+0x314) is stepped by `0x110140` (the other characters' by `0x3a25a0`, its law `0x10d970`):
+v += g(v) h, g -450, or -100 - 0.4 |v| while |v| is 15 or less (the top of a jump), a fifth of that gliding; his height
+by the new v h after it (semi-implicit). Its result depends on the step: at the console's 0.04 his height runs straight
+from frame to frame, the slope of each 0.04 s that step's velocity, chosen at its start (overshooting the |v| = 15
+boundary by a step). Native sites at the five velocity stores (`0x11032c`, `0x1104fc`, `0x1105b0`, `0x11095c`,
+`0x3a2640`; `runtime/shino_port.cpp` `gravityStep`) keep, for each character, a shadow of that velocity stepping at
+0.04 s in the frames' own time, and store each frame the velocity that moves him as far as the console would in that
+frame's time: his height is the console's path, sampled 60 times a second. A velocity the game's other code wrote since
+(the take-off's, a landing's) restarts the shadow from it. Only when the port runs another rate than the console's
+(`SHINO_60FPS`, `SHINO_FRAME_VBLANKS=1`). The standing jump at 60 now follows the 25 path within 0.008 (peak 14.13); a
+running jump's rise matches too, and its catch on the railing lands a frame of 60 earlier (collision is tested each
+frame: at 25 the ninja overshoots before it is seen).
