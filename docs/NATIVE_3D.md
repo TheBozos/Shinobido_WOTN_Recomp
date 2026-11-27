@@ -363,6 +363,14 @@ the colour toward FOGCOL by 1 - F after the texture function, before blending, a
 a quarter of the pixels change (the distance hazes into the dark fog colour); the GS path and the native one 0.2% of
 the pixels apart. The draws' checksums (`SHINO_CHECKSUM`) change with it, as the vertices' fog is part of them.
 
+## On by default (2026-11-27)
+
+Native 3D is the default: with no `SHINO_NATIVE_3D` the 3D renderers' batches are drawn natively and their objects
+made whole (`SHINO_NATIVE_3D=0` translates their GS packets as before; `SHINO_NATIVE_OBJECTS=0` keeps the VU for the
+objects). The VU diagnostics that rerun each program (`SHINO_VU_JUMPS`, `SHINO_VU_POISON`, `SHINO_VU_VERIFY`) and the
+program trace keep the VU path. The town headless: 133.6 flips a second against 113.5 with it off (VU1 0.01M pairs a
+flip against 1.69M).
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter

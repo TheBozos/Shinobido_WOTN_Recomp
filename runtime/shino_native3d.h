@@ -13,10 +13,11 @@ namespace shino::vu
 
 namespace shino::native3d
 {
-    // SHINO_NATIVE_3D: 0 (or unset) off; 1 on (the batch drawn natively, the variant still run for what it leaves in
-    // VU1 memory and registers, its GS packets not sent); "skip" (the variant not run: its first pass's results written
-    // back, the registers left as the stop leaves them; experimental); "verify" (each batch made natively and also by
-    // the VU program, the clip positions and cull flags compared, the VU's drawn).
+    // SHINO_NATIVE_3D: unset or 1 on (the default: the 3D renderers' batches drawn natively, their objects made whole
+    // here, SHINO_NATIVE_OBJECTS); 0 off (their GS packets translated, as before native 3D); "skip" (the variant not
+    // run: its first pass's results written back, the registers left as the stop leaves them; experimental); "verify"
+    // (each batch made natively and also by the VU program, the clip positions, cull flags and GS packets compared,
+    // the VU's drawn).
     enum class Mode
     {
         Off,

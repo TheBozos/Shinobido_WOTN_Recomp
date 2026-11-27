@@ -1108,7 +1108,9 @@ namespace shino
             // Native 3D (shino_native3d.cpp): a renderer's program stops at a variant drawn natively and the batch is drawn
             // natively; verify: drawn by the VU as well, the two compared.
             const native3d::Mode nativeMode = native3d::mode();
-            const uint8_t *stops = !v.vu0 && !g_traceThis && !verifying && nativeMode != native3d::Mode::Off && compiledOn()
+            // (the VU diagnostics that rerun or trace each program keep the VU path: SHINO_VU_JUMPS, SHINO_VU_POISON)
+            static const bool vuDiagnostic = std::getenv("SHINO_VU_JUMPS") || std::getenv("SHINO_VU_POISON");
+            const uint8_t *stops = !v.vu0 && !g_traceThis && !verifying && !vuDiagnostic && nativeMode != native3d::Mode::Off && compiledOn()
                                        ? native3d::takeOverAt(v)
                                        : nullptr;
             static std::vector<uint8_t> objectBefore, objectNative;

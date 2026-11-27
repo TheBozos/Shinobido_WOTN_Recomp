@@ -564,9 +564,11 @@ namespace shino::native3d
     Mode mode()
     {
         static const Mode m = [] {
-            const char *e = std::getenv("SHINO_NATIVE_3D");
-            if (!e || !*e || *e == '0')
+            const char *e = std::getenv("SHINO_NATIVE_3D"); // (unset: on)
+            if (e && *e == '0')
                 return Mode::Off;
+            if (!e || !*e)
+                return Mode::On;
             return std::strcmp(e, "verify") == 0 ? Mode::Verify : std::strcmp(e, "skip") == 0 ? Mode::Skip : Mode::On;
         }();
         return m;

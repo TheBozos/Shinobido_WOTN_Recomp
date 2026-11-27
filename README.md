@@ -170,9 +170,11 @@ uploads); `SHINO_SAMPLE=<first flip>:<last flip>` samples the game thread into `
 `tools/shino_samples.py build/bozo/shinobido.exe` names the functions. `SHINO_VU_VERIFY=1` runs every VU program both
 compiled and interpreted and reports any difference. [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has the rest.
 
-Native 3D (experimental, off by default): `SHINO_NATIVE_3D=1` draws the 3D renderers' batches with BozoEngine's
-renderer instead of translating their GS packets, and makes their objects whole on the CPU (setup, skinning,
-lighting, environment mapping, drawing: no VU code for them; `SHINO_NATIVE_OBJECTS=0` keeps the VU for them). `SHINO_NATIVE_3D=verify` and `SHINO_NATIVE_OBJECTS=verify` compare the native work with the VU's.
+Native 3D (on by default): the 3D renderers' batches are drawn by BozoEngine's renderer instead of translating their
+GS packets, and their objects are made whole on the CPU (setup, skinning, lighting, environment mapping, fog, drawing:
+no VU code for them). `SHINO_NATIVE_3D=0` goes back to translating the GS packets; `SHINO_NATIVE_OBJECTS=0` keeps the VU
+for the objects (the batches still drawn natively). `SHINO_NATIVE_3D=verify` and `SHINO_NATIVE_OBJECTS=verify` compare
+the native work with the VU's.
 [docs/NATIVE_3D.md](docs/NATIVE_3D.md) has the details.
 
 ### Windows
