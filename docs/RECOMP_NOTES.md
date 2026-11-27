@@ -339,6 +339,17 @@ same; `SHINO_VU_VERIFY=1` from `q93.state` into the fight: 52M programs, none di
 compiled VU1 code 35% (images 45, 0 and 67: the clamping, the dest blends, the pair count and Q's countdown each pair,
 spills of the 32 vector locals), the EE code 26% (spread), the VU call path 9%, the GS translator 7%, VIF 6%.
 
+Then the VU call path: about 90 times the VU0 code's own time (`shino_vu1_image_2`: 13 samples, the chain to it
+1,160). Trimmed: VU0 programs run the image last found at their pc directly (`runVu0Compiled`, without
+runProgram's VU1 bookkeeping; SHINO_VU_VERIFY, SHINO_VU0_INTERP and SHINO_TRACE_VU0 take the full path), `vu0::run`'s
+vi copies kept scalar (a 16-byte load of halfwords just stored one by one stalls), and BozoEngine finds the port's VU0
+programs in a table by pair instead of a search (TheBozos/BozoEngine#157). The chain is about a sixth shorter (other
+programs on the machine made the totals vary by a third between runs); the vertex checksums over 8,500 flips are those
+of VU0 interpreted. What is left of it is the calls themselves (the EE code to the engine's services, the host, the
+port's entry) and the segment check. The compiled VU1 code stays the largest part: over SSE2 its cost is mostly the
+VU's float rules (NaN 0, the clamp; the dest blends three logic operations; GCC already drops a blend of all four
+fields), so a gain there would need SSE4.1 (one-instruction blends), a requirement the port does not have.
+
 ## The GS translator and VIF, faster (2026-11-24)
 
 Measured with `SHINO_SAMPLE=<first flip>:<last flip>` (`runtime/shino_profile.cpp`: the game thread's instruction
