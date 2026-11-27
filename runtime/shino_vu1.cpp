@@ -47,6 +47,8 @@ namespace shino
         uint32_t g_programStart = 0;
         bool g_traceThis = false; // SHINO_TRACE_PROGRAM=<flip>:<n>: one program instance stepped pair by pair
         bool g_noKick = false;    // SHINO_VU_VERIFY: the interpreter's run of a program already run compiled
+        uint64_t *g_kickHash = nullptr; // SHINO_VU_POISON: each kicked GIF packet hashed into it
+        std::array<uint32_t, 1024> g_vuWritten{}; // SHINO_VU_POISON: the image whose program wrote a quadword last (0: the VIF)
         Vec &memVec(uint32_t qw) { return vu::memVec(*g_cur, qw); }
         uint32_t &memWord(uint32_t qw, int field) { return vu::memWord(*g_cur, qw, field); }
 
@@ -814,6 +816,119 @@ namespace shino
             }
         }
 
+        // SHINO_VU_POISON=1: each VU1 program run twice from the same state, the second time with every vf register
+        // (but vf0), ACC, Q, I, P and the MAC and clip flags scrambled, and the VU1 memory earlier programs wrote (not
+        // the VIF since): what a program takes from the ones before it, seen in the fields of its GS packets the GS
+        // reads and in memory (the first run's results kept). By microcode image and entry, at exit.
+        // (tools/shino_vu1_live.py reads the registers' side statically.)
+        struct PoisonStats
+        {
+            uint64_t runs = 0, kicksDiffer = 0, memoryDiffer = 0;
+        };
+        std::map<std::pair<uint32_t, uint32_t>, PoisonStats> g_poison;
+        uint64_t hashKicks(uint64_t h, const uint8_t *p, size_t n)
+        {
+            for (size_t i = 0; i < n; ++i)
+                h = (h ^ p[i]) * 0x100000001b3ull;
+            return h;
+        }
+        void poisonRun(uint32_t pc)
+        {
+            static Vu1 before, after;
+            static std::vector<uint8_t> beforeData, afterData;
+            static vu::Vec beforeVf[32], afterVf[32];
+            Vu1 &unit = *g_cur;
+            const size_t dataBytes = 16u * (unit.qwMask + 1u);
+            before = unit;
+            std::copy(unit.vf, unit.vf + 32, beforeVf);
+            beforeData.assign(unit.data, unit.data + dataBytes);
+            uint64_t h1 = 0xcbf29ce484222325ull, h2 = h1;
+            g_kickHash = &h1;
+            compiledFrom(pc);
+            g_kickHash = nullptr;
+            after = unit;
+            std::copy(unit.vf, unit.vf + 32, afterVf);
+            afterData.assign(unit.data, unit.data + dataBytes);
+            // the memory it wrote (marked for the next programs: until the VIF writes it again)
+            std::array<bool, 1024> wroteNow{};
+            for (uint32_t q = 0; q < 1024 && q <= unit.qwMask; ++q)
+                wroteNow[q] = std::memcmp(afterData.data() + 16 * q, beforeData.data() + 16 * q, 16) != 0;
+            // again, scrambled: 1 the registers, 2 the memory earlier programs wrote, 3 both
+            static const int what = std::atoi(std::getenv("SHINO_VU_POISON"));
+            const int image = findImage(pc);
+            const uint32_t source = image >= 0 ? vu::kImages[image].source : 1u;
+            static const char *range = std::getenv("SHINO_VU_POISON_RANGE"); // first-last quadword (decimal)
+            static const uint32_t lowQ = range ? std::strtoul(range, nullptr, 10) : 0;
+            static const uint32_t highQ = range && std::strchr(range, '-') ? std::strtoul(std::strchr(range, '-') + 1, nullptr, 10) : 1023;
+            if ((what & 4) && source == 0x4f3f60u) // the quadwords other images wrote, as ranges with their writers
+            {
+                static int shown = 0;
+                if (shown++ < 3)
+                {
+                    std::printf("[shino:poison] %x at %04x reads after:", source, pc);
+                    for (uint32_t q = 0; q < 1024; ++q)
+                        if (g_vuWritten[q] && g_vuWritten[q] != source && (q == 0 || g_vuWritten[q - 1] != g_vuWritten[q]))
+                        {
+                            uint32_t e = q;
+                            while (e + 1 < 1024 && g_vuWritten[e + 1] == g_vuWritten[q])
+                                ++e;
+                            std::printf(" %u-%u (%x)", q, e, g_vuWritten[q]);
+                        }
+                    std::printf("%c", 10);
+                }
+            }
+            if (what & 2) // what another microcode's programs wrote
+                for (uint32_t q = lowQ; q < 1024 && q <= highQ && q <= unit.qwMask; ++q)
+                    if (g_vuWritten[q] && g_vuWritten[q] != source)
+                        for (int i = 0; i < 4; ++i)
+                        {
+                            const float x = 2468.25f + 3.0f * q + i;
+                            std::memcpy(beforeData.data() + 16 * q + 4 * i, &x, 4);
+                        }
+            unit = before;
+            std::copy(beforeVf, beforeVf + 32, unit.vf);
+            std::memcpy(unit.data, beforeData.data(), dataBytes);
+            if (what & 1)
+            {
+                for (int r = 1; r < 32; ++r)
+                    for (int i = 0; i < 4; ++i)
+                        unit.vf[r].f[i] = 1234.5f + 17.25f * r - 3.5f * i;
+                for (int i = 0; i < 4; ++i)
+                    unit.acc.f[i] = -987.25f + i;
+                unit.q = 0.123f;
+                unit.qDelay = 0;
+                unit.i = 4321.0f;
+                unit.p = 77.0f;
+                unit.clip = 0xA5A5A5u;
+                unit.mac = 0x5A5Au;
+            }
+            g_kickHash = &h2;
+            g_noKick = true;
+            compiledFrom(pc);
+            g_noKick = false;
+            g_kickHash = nullptr;
+            PoisonStats &s = g_poison[{source, pc}];
+            ++s.runs;
+            s.kicksDiffer += h1 != h2;
+            s.memoryDiffer += std::memcmp(unit.data, afterData.data(), dataBytes) != 0;
+            // the first run's results
+            unit = after;
+            std::copy(afterVf, afterVf + 32, unit.vf);
+            std::memcpy(unit.data, afterData.data(), dataBytes);
+            for (uint32_t q = 0; q < 1024; ++q)
+                if (wroteNow[q])
+                    g_vuWritten[q] = source;
+            static const bool reported = [] {
+                std::atexit([] {
+                    for (const auto &[k, s] : g_poison)
+                        std::printf("[shino:poison] image %x entry %04x: %llu runs, kicks differ %llu, memory differs %llu%c", k.first, k.second,
+                                    (unsigned long long)s.runs, (unsigned long long)s.kicksDiffer, (unsigned long long)s.memoryDiffer, 10);
+                });
+                return true;
+            }();
+            (void)reported;
+        }
+
         void runCompiled(uint32_t pc)
         {
             static const bool verify = std::getenv("SHINO_VU_VERIFY") != nullptr;
@@ -955,6 +1070,21 @@ namespace shino
             const uint8_t *stops = !v.vu0 && !g_traceThis && !verifying && nativeMode != native3d::Mode::Off && compiledOn()
                                        ? native3d::takeOverAt(v)
                                        : nullptr;
+            static std::vector<uint8_t> objectBefore, objectNative;
+            bool compareObject = false;
+            if (stops && native3d::objectsMode() == 1 && native3d::programNative(v, pc, g_cv->top, g_cv->itop, true))
+                return; // a whole object natively: no VU code
+            if (stops && native3d::objectsMode() == 2)
+            {
+                const size_t bytes = 16u * (v.qwMask + 1u);
+                objectBefore.assign(v.data, v.data + bytes);
+                if (native3d::programNative(v, pc, g_cv->top, g_cv->itop, false))
+                {
+                    objectNative.assign(v.data, v.data + bytes);
+                    std::memcpy(v.data, objectBefore.data(), bytes);
+                    compareObject = true;
+                }
+            }
             if (stops)
             {
                 native3d::programStart(v, g_cv->top, g_cv->itop);
@@ -983,7 +1113,11 @@ namespace shino
                         native3d::finish(v);
                     }
                 }
+                if (compareObject) // the VU's run against native's
+                    native3d::compareObject(v, objectNative.data());
             }
+            else if (static const bool poison = std::getenv("SHINO_VU_POISON") != nullptr; poison && !v.vu0 && compiledOn())
+                poisonRun(pc);
             else if (!g_traceThis && compiledOn() && (!v.vu0 || vu0Compiled))
                 runCompiled(pc);
             else
@@ -1097,6 +1231,9 @@ namespace shino
             uint32_t addr = code & 0x3FFu;
             if (flg) addr += f.tops;
             const uint32_t cl = std::max(f.cl, 1u), wl = std::max(f.wl, 1u);
+            if (static const bool poison = std::getenv("SHINO_VU_POISON") != nullptr; poison && !g_cur->vu0 && true)
+                for (uint32_t i = 0; i < num; ++i) // the VIF's own data now (SHINO_VU_POISON)
+                    g_vuWritten[(wl <= cl ? addr + (i / wl) * cl + i % wl : addr + i) & 1023u] = 0;
             if (survey()) // the UNPACK forms: vn vl masked mode fill (what it costs: vectors)
                 g_unpackForms[{vn | vl << 2 | masked << 4 | f.mode << 5 | uint32_t(wl > cl) << 7 | uint32_t(cl != wl) << 8 | uint32_t(usn) << 9}] += num;
             // The common case: no mask, no fill, STMOD 0, 32 / 16 / 8-bit elements: the vectors straight from the data
@@ -1299,6 +1436,48 @@ namespace shino
             }
             if (native3d::capturing())
                 native3d::captureKick(v.mem, address);
+            if (g_kickHash) // the packets, tag by tag to the one with EOP
+                for (uint32_t at = address, packets = 0; packets < 64; ++packets)
+                {
+                    uint64_t lo;
+                    std::memcpy(&lo, v.mem + 16u * (at & 0x3FFu), 8);
+                    const uint32_t loops = lo & 0x7FFFu, flg = (lo >> 58) & 3u, nreg = (lo >> 60) ? uint32_t(lo >> 60) : 16u;
+                    const uint32_t qwords = flg == 0 ? loops * nreg : flg == 1 ? (loops * nreg + 1) / 2 : loops;
+                    // the tag, then each field the GS reads (PACKED: by register; the others whole)
+                    uint64_t tag[2];
+                    std::memcpy(tag, v.mem + 16u * (at & 0x3FFu), 16);
+                    *g_kickHash = hashKicks(*g_kickHash, reinterpret_cast<const uint8_t *>(tag), 16);
+                    for (uint32_t q = 1; q <= qwords; ++q)
+                    {
+                        uint32_t w[4];
+                        std::memcpy(w, v.mem + 16u * ((at + q) & 0x3FFu), 16);
+                        if (flg == 0)
+                        {
+                            const uint32_t reg = (tag[1] >> (4 * ((q - 1) % nreg))) & 15u;
+                            static constexpr uint32_t kMask[16][4] = {
+                                {0x7FFu, 0, 0, 0},                                     // PRIM
+                                {0xFFu, 0xFFu, 0xFFu, 0xFFu},                          // RGBAQ (Q from ST)
+                                {~0u, ~0u, ~0u, 0},                                    // ST, Q
+                                {0x3FFFu, 0x3FFFu, 0, 0},                              // UV
+                                {0xFFFFu, 0xFFFFu, 0x0FFFFFF0u, 0x8FF0u},              // XYZF2
+                                {0xFFFFu, 0xFFFFu, ~0u, 0x8000u},                      // XYZ2
+                                {~0u, ~0u, 0, 0}, {~0u, ~0u, 0, 0}, {~0u, ~0u, 0, 0},  // TEX0_1, TEX0_2, CLAMP_1
+                                {~0u, ~0u, 0, 0},                                      // CLAMP_2
+                                {0, 0, 0, 0xFF0u},                                     // FOG
+                                {0, 0, 0, 0},                                          // (reserved)
+                                {0xFFFFu, 0xFFFFu, 0x0FFFFFF0u, 0x0FF0u},              // XYZF3
+                                {0xFFFFu, 0xFFFFu, ~0u, 0},                            // XYZ3
+                                {~0u, ~0u, 0xFFu, 0},                                  // A+D
+                                {0, 0, 0, 0}};                                         // NOP
+                            for (int i = 0; i < 4; ++i)
+                                w[i] &= kMask[reg][i];
+                        }
+                        *g_kickHash = hashKicks(*g_kickHash, reinterpret_cast<const uint8_t *>(w), 16);
+                    }
+                    at += qwords + 1;
+                    if ((lo >> 15) & 1u)
+                        break;
+                }
             if (!g_noKick)
                 gs::path1(v.mem, address);
         }

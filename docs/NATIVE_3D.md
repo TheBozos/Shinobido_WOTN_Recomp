@@ -101,7 +101,9 @@ z row2 + row3) applied to the position,
 X = 2048 + 512 (x/w - 0.5), Y = 2048 + 512 (y/w - 0.5), Z = -19.67 + 65548 / w. The UVs are slot 1's s and t (STQ =
 s/w, t/w, 1/w), the colour slot 2's after the lighting (`ftoi0`).
 
-**Batches.** An object's first batch is `MSCAL 0` (the setup, then its variant); each next one `MSCAL 0x3968`, whose
+**Batches.** An object's first batch is `MSCAL 0` (the setup, then its variant); each next one `MSCNT`, which starts
+where the variant ended (its E bit's pair is the one before `0x3968`, so TPC is `0x3968`; elsewhere in this file
+"MSCAL 0x3968" means that), whose
 `jr vi15` goes back to the batch's prelude at pair 51 (`xtop vi1`, `xitop vi9`: the batch's buffer and count; the
 lighting; `jr vi12` into the variant). The variant ends `vi15 = 51` and the E bit.
 
@@ -215,6 +217,44 @@ pending result, while the hardware's divider makes the new one wait for it (Q wr
 `div Q, 1/radius` is followed six pairs later by an `rsqrt` and then a `subq` that reads 1/radius: the model gave it
 a stale Q, so every point-lit surface was lit with the wrong falloff (brighter). Fixed in the recompiler, the
 interpreter and `divideV` (`shino_vu.h`).
+
+## Stage 2b: the main renderer's objects whole, no VU code (2026-11-27)
+
+`SHINO_NATIVE_OBJECTS=1` (with `SHINO_NATIVE_3D=1`): at an object's `MSCAL 0` the flags (1023.x) give the variant the
+setup would choose (`variantOf`, the setup's branches at `0x28`-`0x188`) and the light list its types; when the variant
+is one computed here (1023 or 554) and every light is read (types 0, 2, 128), none of the object's programs run on the
+VU: each batch's setup is made here in place, then the batch drawn as in stage 1, then the first pass's results written
+back. On the frame-5200 play, 211,850 of 213,848 objects (99%; the rest variant 1438, or a light type not read).
+
+What that needed, found with two tools:
+- **`tools/shino_vu1_live.py`**: for a program's entry, the registers whose value from before it can reach a store, a
+  kick or a branch (a lane computed and not used does not count). The setup at pair 0 of every renderer takes nothing
+  that matters from before (the variants' reads of vf7.w, vf11.w and the like are lanes stored in a GS register's
+  unused word).
+- **`SHINO_VU_POISON`** (`shino_vu1.cpp`): each VU1 program run twice from the same state, the second time with the
+  registers scrambled (1), the VU1 memory other microcode wrote and the VIF did not since (2), or both (3), the GS
+  packets compared field by field (what the GS reads) and the memory after. For every renderer's `MSCAL 0`, the GS
+  output is the same: an object does not depend on the registers or memory the programs before it left. The one reader
+  of another renderer's leftovers is set `0x4f3f60` (about once a frame, the stale vertices just past a main batch).
+  So a native object must leave VU1 memory as the VU would; its registers do not matter.
+
+What the VU leaves, and the native object now leaves too:
+- the setup's loops go four vertices at a time, to the batch rounded up to four (`vi11 = vi1 + (4 count + 12 &
+  0x7ff0)`), over the stale vertices past the batch: their colours and normals converted, the constant lights added,
+  clamped and multiplied by the material; the lit morph's loop and the point lights stop at the batch's end (`vi10`);
+- the first pass's clip positions and ADC (to the batch rounded up to two), as stage 1's skip mode wrote them;
+- the variant's entry in 1023.y (`isw.y vi12`);
+- every result clamped as the VU's arithmetic leaves it (no NaN, nothing past the largest finite): stale vertices can
+  hold any bits;
+- **TPC**: the next batches are `MSCNT`s, which start where the last program ended. A native object leaves TPC at
+  `0x3968` as its variant would; without it the next batch started wherever the last VU program had stopped.
+
+`SHINO_NATIVE_OBJECTS=verify` makes each such program here, then by the VU, and compares the VU1 memory after (the
+input buffers 0-551 and the constants 1008-1023; 552-1007 are the output packets) and TPC. The frame-5200 play to 6200
+(392,607 programs) and the final fight (406,450): no difference. The checksum of everything drawn (`SHINO_CHECKSUM`) is
+the same as with stage 1 (the town at flips 500 and 1000, the final fight at 500), and the game's RAM the same at
+frame 6200. 1,000 frames of the town headless: about 8.2 s against 9.6 s with stage 1. A whole mission day (the q93
+state's busy day): 7.81M objects, 99.9% whole natively, no fault.
 
 ## The plan
 
