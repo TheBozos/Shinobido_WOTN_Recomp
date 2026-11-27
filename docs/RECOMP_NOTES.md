@@ -273,8 +273,9 @@ time a flip, exclusive; `SHINO_RATE=1` the rate alone):
   while nothing was written. Decodes down about four times.
 - **The GS translator**: the materials made again only when their registers change; primitives of the same material
   and texture merge into one batch, a two-pass (AFAIL) run keeping its passes in two (before, two batches a triangle).
-- `SHINO_CHECKSUM=1`: a hash of every vertex drawn, every 500 flips; all the changes above keep it, through the boot,
-  New Game, the cutscene and play.
+- `SHINO_CHECKSUM=1`: a hash of every vertex drawn, every 500 flips (`SHINO_CHECKSUM_EVERY=n`: every n); all the
+  changes above keep it, through the boot, New Game, the cutscene and play. The native 3D batches have their own,
+  printed after it (`native`).
 
 ## VU1 microprograms, recompiled (2026-11-24)
 

@@ -251,10 +251,47 @@ What the VU leaves, and the native object now leaves too:
 
 `SHINO_NATIVE_OBJECTS=verify` makes each such program here, then by the VU, and compares the VU1 memory after (the
 input buffers 0-551 and the constants 1008-1023; 552-1007 are the output packets) and TPC. The frame-5200 play to 6200
-(392,607 programs) and the final fight (406,450): no difference. The checksum of everything drawn (`SHINO_CHECKSUM`) is
-the same as with stage 1 (the town at flips 500 and 1000, the final fight at 500), and the game's RAM the same at
-frame 6200. 1,000 frames of the town headless: about 8.2 s against 9.6 s with stage 1. A whole mission day (the q93
+(392,607 programs) and the final fight (406,450): no difference. The checksums of what is drawn (`SHINO_CHECKSUM`: the
+GS translator's draws and, separately, the native batches') are the same as with stage 1 (the town at flips 250 to
+1000, the final fight at 250 and 500), and the game's RAM the same at frame 6200. 1,000 frames of the town headless: about 8.2 s against 9.6 s with stage 1. A whole mission day (the q93
 state's busy day): 7.81M objects, 99.9% whole natively, no fault.
+
+## Stage 2c: the characters whole, and the spotlight (2026-11-27)
+
+**The characters' setup** (image 67, set `0x579a00`) is the main renderer's with skinning in front. The batch comes in
+at five quadwords a vertex: position, UV, colour, normal, and a fifth whose four lanes are the bone weights (floats)
+with the bones' indices in their low 16 bits (`ilw` reads the index, `lq` the weight). For each vertex the four bones'
+rows at 696-699 past the index are blended by the weights (699 the translation), the position (morphed first when
+1020.w is not 0, the targets after the five-quadword batch, the normal targets after those) and the normal (over 128)
+transformed by the blend, and the batch rewritten in place at four quadwords a vertex (the writes stay behind the
+reads). Unlit, the colour is times the material and slot 3 left alone; lit, the main renderer's light code follows,
+word for word (`0x570` on: the dispatch, types 2, 1, 128, 129, 130 and the end). Details that matter for exact results:
+the first vertex's position and UV are loaded as they are, the others copied by `addx ..., vf0x` (clamped, -0 made
++0); the extra vertices past the batch (to four) are not skinned but are lit and clamped like the main renderer's.
+
+**The spotlight** (type 129, three quadwords: colour, position and radius, direction and cutoff): the point light's
+falloff (colour x max(n.d, 0) x (1/|d| - 1/radius), not below 0), added only inside the cone: the cosine between the way
+to the light and the spot's direction (rec2's xyz turned into the object's space, times 979.w) against the cutoff
+(rec2.w times 979.w), by the sign flag of cutoff - cosine (`fmand` of the MAC flags 4 pairs after the `subx.w`). The
+characters of the final fight are lit by it.
+
+Checked at the stop point (`SHINO_NATIVE_3D=verify`): on the frame-5200 play 29,869 character batches (1.04M vertices,
+the extras past each batch included) and on the final fight 242,303 (8.95M), and the main renderer's 409,973 there,
+every position, UV, normal and colour identical.
+
+**Whole character objects** (`SHINO_NATIVE_OBJECTS=1`): variant 644 (flags `0x9`) natively, the next batches by MSCNT
+at `0x3c38`, the output buffers 430-695 (`vi13`, `vi14`) left out of the compare. Verify: the frame-5200 play (92,170
+programs) and the final fight (234,448), memory and TPC identical; 74,818 of 76,400 objects of the fight whole
+natively (the rest the clipped variant 1113).
+
+One reader sees the difference: set `0x601710`'s sprite program (its output buffers at 416 and 677 overlap the
+characters') takes the w lane of a quadword it did not write, which was the characters' last GS packet and is now older
+data; it lands in the Q of one corner of a few sprites whose S and T are 0. The primitives of flips 2, 100, 300 and 450
+of the fight differ in that Q alone and in nothing drawn, the native batches' checksum is the same as stage 1's (the
+town and the fight), and the game's RAM is the same at frame 2306600.
+
+Time, headless: 1,000 frames of the town 8.2 s (9.5 s with stage 1), 500 of the final fight 6.4 s (7.2 s). A whole
+mission day: 2.16M character objects, 99.2% whole natively (and the main renderer's 7.81M, 99.9%), no fault.
 
 ## The plan
 

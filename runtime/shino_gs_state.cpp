@@ -580,6 +580,7 @@ namespace shino::gs
         std::map<std::string, uint64_t> g_survey;                      // SHINO_SURVEY
         uint32_t g_displayFbp = 0;                                     // the frame buffer shown last
         uint64_t g_prims = 0, g_offscreenPrims = 0, g_flips = 0, g_uploads = 0, g_checksum = 0xCBF29CE484222325ull;
+        uint64_t g_nativeChecksum = 0xCBF29CE484222325ull; // SHINO_CHECKSUM: the native batches (gs::nativeTriangles)
 
         // The frame buffers the game displays (DISPFB's FBP, flip), as TEX0's block pointers: a texture there is a frame.
         std::array<uint32_t, 4> g_frameBuffers{~0u, ~0u, ~0u, ~0u};
@@ -1123,6 +1124,14 @@ namespace shino::gs
         Vertex *p = place(into, alsoInto, count);
         std::copy(vertices, vertices + count, p);
         g_prims += count / 3;
+        if (static const bool sum = std::getenv("SHINO_CHECKSUM") != nullptr; sum) // the native batches' own: matrix and vertices
+        {
+            for (const uint8_t b : std::bit_cast<std::array<uint8_t, sizeof(m)>>(m))
+                g_nativeChecksum = (g_nativeChecksum ^ b) * 0x100000001B3ull;
+            for (uint32_t i = 0; i < count; ++i)
+                for (const uint8_t b : std::bit_cast<std::array<uint8_t, sizeof(Vertex)>>(vertices[i]))
+                    g_nativeChecksum = (g_nativeChecksum ^ b) * 0x100000001B3ull;
+        }
     }
 
     void writeRegister(uint32_t address, uint64_t value)
@@ -1509,8 +1518,12 @@ namespace shino::gs
             changedBlocks = g_blocksChanged, prims = g_prims;
         }
         prof::flip();
-        if (static const bool onShinoChecksum = std::getenv("SHINO_CHECKSUM") != nullptr; onShinoChecksum && g_flips % 500 == 0)
-            std::printf("[shino:checksum] flip %llu %016llx\n",(unsigned long long)g_flips, (unsigned long long)g_checksum);
+        // SHINO_CHECKSUM: the running checksums every 500 flips (SHINO_CHECKSUM_EVERY: every n): what the GS translator
+        // drew, and the native batches
+        static const uint64_t checksumEvery = std::getenv("SHINO_CHECKSUM_EVERY") ? std::max<uint64_t>(1, std::strtoull(std::getenv("SHINO_CHECKSUM_EVERY"), nullptr, 10)) : 500;
+        if (static const bool onShinoChecksum = std::getenv("SHINO_CHECKSUM") != nullptr; onShinoChecksum && g_flips % checksumEvery == 0)
+            std::printf("[shino:checksum] flip %llu %016llx native %016llx\n", (unsigned long long)g_flips, (unsigned long long)g_checksum,
+                        (unsigned long long)g_nativeChecksum);
         bozo::port::frameEnd(rt, ctx);
     }
 
