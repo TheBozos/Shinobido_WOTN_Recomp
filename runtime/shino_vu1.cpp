@@ -838,9 +838,14 @@ namespace shino
                 if (!d.valid || d.lo != lo || d.up != up)
                     d = decodePair(lo, up, pc, v.pcMask);
                 ++v.pairs;
-                // Q's pending result lands
+                // Q's pending result lands; a DIV / SQRT / RSQRT issued while the divider is busy waits for it
                 if (v.qDelay && --v.qDelay == 0)
                     v.q = v.pendingQ;
+                if (v.qDelay && !((up >> 31) & 1u) && (d.lk == kDiv || d.lk == kSqrt || d.lk == kRsqrt))
+                {
+                    v.q = v.pendingQ;
+                    v.qDelay = 0;
+                }
                 static UpperResult u; // made afresh only for upper()
                 __m128 arithResult;
                 static const bool scalarOnly = std::getenv("SHINO_VU_SCALAR") != nullptr; // the reference path, for checks
@@ -952,6 +957,7 @@ namespace shino
                                        : nullptr;
             if (stops)
             {
+                native3d::programStart(v, g_cv->top, g_cv->itop);
                 v.stopPairs = stops;
                 g_stopped = false;
                 compiledFrom(pc);

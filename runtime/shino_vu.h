@@ -311,10 +311,13 @@ namespace shino::vu
     {
         setVf(v, it, dest, _mm_set1_ps(asF(static_cast<uint32_t>(static_cast<int32_t>(s16(vi(v, is)))))));
     }
-    // DIV (0), SQRT (1), RSQRT (2): Q's result lands 7 pairs later (13 for RSQRT), or at WAITQ.
+    // DIV (0), SQRT (1), RSQRT (2): Q's result lands 7 pairs later (13 for RSQRT), or at WAITQ, or when another
+    // division issues (it waits for the divider).
     SHINO_VU_INLINE float divideResult(int kind, float s, float t);
     SHINO_VU_INLINE void divideV(Unit &v, int kind, float s, float t)
     {
+        if (v.qDelay) // the divider busy: the new division waits for the result pending (Q written)
+            v.q = v.pendingQ;
         v.pendingQ = divideResult(kind, s, t);
         v.qDelay = kind == 2 ? 13 : 7;
     }

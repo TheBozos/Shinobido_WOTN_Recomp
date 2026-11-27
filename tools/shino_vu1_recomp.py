@@ -398,6 +398,8 @@ def emit_pair(img, node, out):
     w('        ++n;')
     if img.q[node] > 0:
         w('        if (qd && --qd == 0) qv = qp;')
+        if x.lk in ('DIV', 'SQRT', 'RSQRT'):  # the divider busy: the pair waits for its result (Q written), then issues
+            w('        if (qd) { qv = qp; qd = 0; }')
     if x.kind == 'arith':
         b = {0: F(x.ft), 1: f'bcast({F(x.ft)}, {x.bc})', 2: '_mm_set1_ps(qv)', 3: '_mm_set1_ps(iv)'}[x.operand]
         w(f'        const __m128 u = arithV({x.fn}, {F(x.fs)}, {b}, fa);')

@@ -193,6 +193,29 @@ old way; no fault. Frame-exact captures of the town and the final fight: 0.9 to 
 The replayed strips' attributes still come from the VU's packets: drawing them from the batch too (as for the main
 variants) is the next step for each.
 
+## Stage 2a: the main renderer's setup, read (2026-11-27)
+
+What the main renderer's setup leaves in a batch (four quadwords a vertex: position, UV, colour, normal) is now
+computed natively from the batch as it arrives (`nativeSetup`, checked in verify mode; the VU still runs it):
+
+- the morph: when 1020.w (the weight a) is not 0, the position and the normal blend `p (1 - a) + target a` towards the
+  targets stored after the batch (positions at TOP + 4 count, normals after those);
+- the colour is slot 2 converted (`itof0`), the normal slot 3 over 128; unlit (980's type 0) the colour times the
+  material colour (1019) and that is all;
+- the light list from 980 (the type in .w; 976-979 bring each light's position into the object's space): type 2 a
+  constant colour (times 1020.x) added; type 128 a point light (colour times 1020.z, radius rec1.w times 976.w): each
+  vertex gains colour x max(n.d, 0) x (1/|d| - 1/radius) where that is positive; type 0 ends the list; then the colours
+  clamped to 255 and multiplied by the material colour. Types 1 (directional, 0x598), 129 (a spotlight gated on MAC
+  flags, 0x830) and 130 (0xa18) are not read: such a batch reports "a light not read".
+
+On the first mission (play5200 to 5320): 47,121 batches, 2.17M vertices, every position, normal and colour identical.
+
+Reading it found a VU-model bug: a DIV / SQRT / RSQRT issued while another division was still pending replaced the
+pending result, while the hardware's divider makes the new one wait for it (Q written first). The point light's
+`div Q, 1/radius` is followed six pairs later by an `rsqrt` and then a `subq` that reads 1/radius: the model gave it
+a stale Q, so every point-lit surface was lit with the wrong falloff (brighter). Fixed in the recompiler, the
+interpreter and `divideV` (`shino_vu.h`).
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter

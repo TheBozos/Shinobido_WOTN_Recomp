@@ -39,6 +39,8 @@ namespace shino::native3d
     void report();
     // Verify: while the VU runs a compared batch's variant, its XGKICKs' GIF packets are read here (each vertex's ST,
     // RGBAQ and XYZF2) to compare with the native batch's (compare()).
+    // A program of a renderer drawn natively starts: its batch is at TOP (top), ITOP (itop) vertices.
+    void programStart(const vu::Unit &v, uint32_t top, uint32_t itop);
     bool capturing();
     void captureKick(const uint8_t *vuMemory, uint32_t address);
     // A replayed variant having run (its kicks held and kept): its packets replayed in order, each strip of the batch
