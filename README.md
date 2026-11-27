@@ -177,6 +177,9 @@ for the objects (the batches still drawn natively). `SHINO_NATIVE_3D=verify` and
 the native work with the VU's.
 [docs/NATIVE_3D.md](docs/NATIVE_3D.md) has the details.
 
+60 frames a second: `SHINO_60FPS=1` runs the game at 60 (the console's is 25): the game's own frame timer told so, and
+its jumps and falls kept on the console's path (docs/RECOMP_NOTES.md, "50 and 60 frames a second").
+
 ### Windows
 
 The same scripts run in an MSYS2 **UCRT64** shell, with MSYS2's GCC (MSVC is not supported for this port).

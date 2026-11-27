@@ -834,3 +834,14 @@ frame's time: his height is the console's path, sampled 60 times a second. A vel
 (`SHINO_60FPS`, `SHINO_FRAME_VBLANKS=1`). The standing jump at 60 now follows the 25 path within 0.008 (peak 14.13); a
 running jump's rise matches too, and its catch on the railing lands a frame of 60 earlier (collision is tested each
 frame: at 25 the ninja overshoots before it is seen).
+
+**The rest of the audit (2026-11-27)**, by game time (emulated cycles or the timer's clock), 25 against 60:
+- the game's RAM over 8 s of idle play: of 44,399 floats that moved, 25,483 moved exactly alike, the 2.4 times faster
+  ones a scratch buffer of transformed vertices rebuilt each frame; the frame counters and buffer pointers that do run
+  by frames are bookkeeping;
+- an attack: its state (+0x2e4 = 203) lasts 0.88 s at 25, 0.90 s at 60, its other phases alike within a frame;
+- the movies: the display goes to PAL's 50 Hz while they play, at either rate; their audio feed sends the same bytes a
+  vblank (2,936 against 2,863), and the boot's sound recorded at both rates correlates at 0.999, 0.5 s earlier at 60:
+  the logos before the movie are that much shorter (counted partly in frames);
+- the final fight in the window at 60: 60.0 frames a second (8-11 ms of CPU a frame); headless 98 to 123.
+Left: the logos' half second; a save state made at 25 loaded at 60 moves the timer's clock once (its rate set again).
