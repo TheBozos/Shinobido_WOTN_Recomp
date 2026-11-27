@@ -760,8 +760,8 @@ title screen and a new game).
   holds 52 game frames a second uncapped or more, and takes a quarter less CPU since (VU0's registers in place, MMI in
   SSE2: "A busy fight, measured"). Next there: the compiled VU1 code (35%).
 - 3D: native draws at the game's model functions (the bring-up path draws the GS packets).
-- Sound: a listen to the cutscene's spoken lines and to the effects in play (the captures show the stream and the
-  effects' voices, not what they sound like).
+- Sound: listened to through the boot, the intro, the story's movies, the castle's cutscene and play (2026-11-27, about
+  4 minutes in the window, 8,683 frames at 25 a second): nothing heard wrong.
 
 ## PAL pacing
 

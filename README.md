@@ -45,10 +45,13 @@ What runs natively:
 
 The game runs at full speed: 25 frames a second, as on a PAL console (it draws a frame every second field).
 
+The movies play at their own 25 pictures a second with their sound, and a listen through the boot, the intro, the
+story's movies, the castle's cutscene and play found nothing wrong (2026-11-27). The busiest fight measured holds more
+than twice the speed the game needs.
+
 Next:
-- **Speed**: the busiest scenes use most of a frame's CPU (the recompiled VU1 code first), too close for slower PCs.
 - **3D drawn natively** at the game's model functions, for higher resolutions and widescreen.
-- **Sound by ear**: the cutscenes' spoken lines and the effects in play are still to be checked by listening.
+- **Speed** for slower PCs: the compiled VU1 code is the largest part of a busy frame.
 
 [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has every boot step, how the drawing works and what is next.
 
