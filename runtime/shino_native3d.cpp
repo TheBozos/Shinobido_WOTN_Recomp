@@ -44,11 +44,17 @@ namespace shino::native3d
             {0x539c30u, 1438u, 0x72du, true, false, true}, // the main renderer's clipped triangle lists (flags 0xe / 0xf)
             {0x579a00u, 644u, 0x787u, false},  // the characters' (MSCNT at 0x3c38), flags 0x9: no clipping, screen-space culling
             {0x579a00u, 1113u, 0x787u, true},  // the characters' clipped variant (flags 0xb): the main 1023's code, smaller buffers
+            // Sets 0x5cc000 and 0x5e7cd0: the main renderer's and the characters' code (their buffers elsewhere), the
+            // variants 21 pairs on, the setup's UVs transformed
+            {0x5cc000u, 1044u, 0x742u, true},              // = 1023
+            {0x5cc000u, 575u, 0x742u, false},              // = 554
+            {0x5cc000u, 1459u, 0x742u, true, false, true}, // = 1438
+            {0x5e7cd0u, 665u, 0x79cu, false},              // = 644
+            {0x5e7cd0u, 1134u, 0x79cu, true},              // = 1113
             // Replayed: the variant's own GS packets, each strip drawn natively from the batch's positions (four quadwords a
             // vertex at vi1) where its vertices are the batch's own on the screen, the other packets as they are.
             {0x599510u, 657u, 0x74du, false, true}, // set 0x599510 (MSCAL 0x3a68): each strip twice, a second texture
             {0x59d290u, 520u, 0x5f1u, false, true},  // set 0x59d290 (MSCAL 0x2f88)
-            {0x5e7cd0u, 1044u, 0x742u, false, true}, // set 0x5e7cd0 (MSCAL 0x3a10)
         };
         constexpr uint32_t kKindCount = sizeof(kKinds) / sizeof(kKinds[0]);
         uint32_t g_kind = 0;   // the kind of the batch drawn last
@@ -78,7 +84,7 @@ namespace shino::native3d
         {
             uint64_t batches = 0, vertices = 0, positionDiffers = 0, uvDiffers = 0, normalDiffers = 0, colourDiffers = 0, unsupported = 0;
         };
-        std::array<SetupStats, 2> g_setup; // the main renderer's, the characters'
+        std::array<SetupStats, 4> g_setup; // by kObjectRenderers
 
         // What the setup leaves in the batch (four quadwords a vertex: position, UV, colour, normal), from the raw batch:
         // the colours and normals converted (itof0, the normals over 128), the positions and normals blended towards the
@@ -97,7 +103,7 @@ namespace shino::native3d
         {
             std::vector<std::array<float, 4>> position, uv, colour, normal;
         };
-        bool nativeSetup(const uint8_t *mem, uint32_t base, uint32_t count, SetupOut &out, bool skin = false)
+        bool nativeSetupCore(const uint8_t *mem, uint32_t base, uint32_t count, SetupOut &out, bool skin)
         {
             auto F = [&](uint32_t qw, int i) {
                 float x;
@@ -113,6 +119,7 @@ namespace shino::native3d
             const auto C = vu::clampF; // each result as the VU's arithmetic leaves it
             const uint32_t all = ((4u * count + 12u) & 0x7FF0u) / 4u; // vi11
             out.position.assign(all, {});
+            out.uv.assign(all, {});
             out.colour.assign(all, {});
             out.normal.assign(all, {});
             const float weight = F(1020, 3);
@@ -125,7 +132,6 @@ namespace shino::native3d
             auto F4 = [&](uint32_t qw) { return V4{F(qw, 0), F(qw, 1), F(qw, 2), F(qw, 3)}; };
             if (skin)
             {
-                out.uv.assign(all, {});
                 for (uint32_t k = count; k < all; ++k) // past the batch: as they are
                 {
                     const uint32_t q = base + 4u * k;
@@ -198,6 +204,7 @@ namespace shino::native3d
             for (uint32_t k = 0; !skin && k < all; ++k)
             {
                 const uint32_t q = base + 4u * k;
+                out.uv[k] = F4(q + 1);
                 V4 p = {F(q, 0), F(q, 1), F(q, 2), F(q, 3)};
                 if (k >= converted) // left as they are (the lit morph's loop ends at the batch's end)
                 {
@@ -353,6 +360,29 @@ namespace shino::native3d
             return true;
         }
 
+        // Sets 0x5cc000 and 0x5e7cd0 (the main renderer's and the characters' code, their variants 21 pairs on) end their
+        // setup with a texture transform: each UV (the batch rounded up to four) becomes 958 + 956 u + 957 v (x and y).
+        bool nativeSetup(const uint8_t *mem, uint32_t base, uint32_t count, SetupOut &out, bool skin, bool uvTransform)
+        {
+            if (!nativeSetupCore(mem, base, count, out, skin))
+                return false;
+            if (!uvTransform)
+                return true;
+            auto F = [&](uint32_t qw, int i) {
+                float x;
+                std::memcpy(&x, mem + 16u * (qw & 0x3FFu) + 4u * static_cast<uint32_t>(i), 4);
+                return x;
+            };
+            const auto C = vu::clampF;
+            for (std::array<float, 4> &uv : out.uv)
+            {
+                const float u = uv[0], v = uv[1];
+                for (int i = 0; i < 2; ++i)
+                    uv[i] = C(C(C(F(958, i) * 1.0f) + F(956, i) * u) + F(957, i) * v);
+            }
+            return true;
+        }
+
         struct Stats
         {
             uint64_t batches = 0, vertices = 0, triangles = 0, culled = 0, rejected = 0, clipped = 0;
@@ -415,7 +445,7 @@ namespace shino::native3d
             uint64_t objects = 0, native = 0, batches = 0, vertices = 0, compared = 0, differs = 0, words = 0, tpcDiffers = 0;
             std::array<uint64_t, 2> notNative{}; // a variant not computed here, a light not read
         };
-        std::array<ObjectStats, 2> g_objects; // the main renderer's, the characters'
+        std::array<ObjectStats, 4> g_objects; // by kObjectRenderers
 
         // The setup's choice of variant (pairs 0x28-0x188) from the flags (1023.x): bit 1 the clipping camera, then bits
         // 3, 2 and 0; the main renderer's entries, or the characters' (the same code, their own variants).
@@ -435,16 +465,30 @@ namespace shino::native3d
         struct ObjectRenderer
         {
             uint32_t packet, program, outFirst, outEnd;
-            bool characters;
+            bool characters;        // the characters' code (skinned), else the main renderer's
+            uint32_t variantOffset; // its variants' entries past the template's
+            bool uvTransform;       // its setup ends with the texture transform (956-958)
+            const char *name;
         };
         constexpr ObjectRenderer kObjectRenderers[] = {
-            {0x539c30u, 0x72du, 552u, 1008u, false}, // the main renderer: 1023 and 554 native
-            {0x579a00u, 0x787u, 430u, 696u, true},   // the characters': 644 native (the bones from 696)
+            {0x539c30u, 0x72du, 552u, 1008u, false, 0u, false, "main"},       // 1023, 554, 1438 native
+            {0x579a00u, 0x787u, 430u, 696u, true, 0u, false, "characters'"}, // 644, 1113 native (the bones from 696)
+            {0x5cc000u, 0x742u, 544u, 956u, false, 21u, true, "0x5cc000"},   // the main renderer's, the UVs transformed
+            {0x5e7cd0u, 0x79cu, 430u, 696u, true, 21u, true, "0x5e7cd0"},    // the characters', the UVs transformed
         };
+        constexpr uint32_t kObjectRendererCount = sizeof(kObjectRenderers) / sizeof(kObjectRenderers[0]);
         const ObjectRenderer *g_objectRenderer = nullptr;
+        const ObjectRenderer *objectRenderer(uint32_t packet)
+        {
+            for (const ObjectRenderer &o : kObjectRenderers)
+                if (o.packet == packet)
+                    return &o;
+            return nullptr;
+        }
         bool variantNative(const ObjectRenderer &r, uint32_t variant)
         {
-            return r.characters ? variant == 644u || variant == 1113u : variant == 1023u || variant == 554u || variant == 1438u;
+            const uint32_t v = variant - r.variantOffset;
+            return r.characters ? v == 644u || v == 1113u : v == 1023u || v == 554u || v == 1438u;
         }
         // The light list at 980 has only the types nativeSetup reads (0 ends it; 2 a constant colour; 128 a point light;
         // 129 a spotlight).
@@ -539,13 +583,14 @@ namespace shino::native3d
             if (kKinds[i].packet == g_packet && kKinds[i].variant == pc / 8u)
                 g_kind = i;
         const Kind &kind = kKinds[g_kind];
-        const bool skin = kind.packet == 0x579a00u;
-        if (g_rawValid && (kind.packet == 0x539c30u || skin) && g_rawTop == base && g_rawCount == count)
+        const ObjectRenderer *setupOf = objectRenderer(kind.packet);
+        const bool skin = setupOf && setupOf->characters, uvOut = skin || (setupOf && setupOf->uvTransform);
+        if (g_rawValid && setupOf && g_rawTop == base && g_rawCount == count)
         {
             SetupOut s;
-            SetupStats &st = g_setup[skin ? 1 : 0];
+            SetupStats &st = g_setup[static_cast<size_t>(setupOf - kObjectRenderers)];
             ++st.batches;
-            if (!nativeSetup(g_raw.data(), base, count, s, skin))
+            if (!nativeSetup(g_raw.data(), base, count, s, skin, setupOf->uvTransform))
                 ++st.unsupported;
             else
                 for (uint32_t k = 0; k < s.position.size(); ++k) // (the batch rounded up to four)
@@ -556,7 +601,7 @@ namespace shino::native3d
                     for (int i = 0; i < 4; ++i)
                     {
                         dp |= std::memcmp(&s.position[k][i], v.data + 16u * (q & v.qwMask) + 4u * i, 4) != 0;
-                        du |= skin && std::memcmp(&s.uv[k][i], v.data + 16u * ((q + 1) & v.qwMask) + 4u * i, 4) != 0;
+                        du |= uvOut && std::memcmp(&s.uv[k][i], v.data + 16u * ((q + 1) & v.qwMask) + 4u * i, 4) != 0;
                         dc |= std::memcmp(&s.colour[k][i], v.data + 16u * ((q + 2) & v.qwMask) + 4u * i, 4) != 0;
                         dn |= std::memcmp(&s.normal[k][i], v.data + 16u * ((q + 3) & v.qwMask) + 4u * i, 4) != 0;
                     }
@@ -566,7 +611,7 @@ namespace shino::native3d
                     st.colourDiffers += dc;
                     if ((dp || du || dc || dn) && st.positionDiffers + st.uvDiffers + st.colourDiffers + st.normalDiffers <= 6)
                         std::printf("[shino:native3d] setup %s vertex %u of %u (slots differ: %d%d%d%d): position %g %g %g %g, the VU's %g %g %g %g; colour %g %g %g, the VU's %g %g %g%c",
-                                    skin ? "characters" : "main", k, count, dp, du, dc, dn, s.position[k][0], s.position[k][1], s.position[k][2], s.position[k][3],
+                                    setupOf->name, k, count, dp, du, dc, dn, s.position[k][0], s.position[k][1], s.position[k][2], s.position[k][3],
                                     lane(v, q, 0), lane(v, q, 1), lane(v, q, 2), lane(v, q, 3), s.colour[k][0], s.colour[k][1], s.colour[k][2],
                                     lane(v, q + 2, 0), lane(v, q + 2, 1), lane(v, q + 2, 2), 10);
                 }
@@ -974,17 +1019,14 @@ namespace shino::native3d
 
     bool programNative(vu::Unit &v, uint32_t pc, uint32_t top, uint32_t itop, bool submit)
     {
-        const ObjectRenderer *r = nullptr;
-        for (const ObjectRenderer &o : kObjectRenderers)
-            if (o.packet == g_packet)
-                r = &o;
+        const ObjectRenderer *r = objectRenderer(g_packet);
         if (!r)
             return false;
-        ObjectStats &st = g_objects[r->characters ? 1 : 0];
+        ObjectStats &st = g_objects[static_cast<size_t>(r - kObjectRenderers)];
         if (pc == 0) // an object's setup: native when its variant and its lights are
         {
             ++st.objects;
-            const uint32_t variant = variantOf(word(v, 1023, 0) & 0xFFFFu, r->characters);
+            const uint32_t variant = variantOf(word(v, 1023, 0) & 0xFFFFu, r->characters) + r->variantOffset;
             const bool native = variantNative(*r, variant);
             const bool lit = (word(v, 980, 3) & 0xFFFFu) != 0;
             g_objectNative = native && (!lit || lightsRead(v.data));
@@ -1005,12 +1047,12 @@ namespace shino::native3d
         st.vertices += itop;
         // The setup in place: positions (skinned, morphed), UVs, colours (lit), normals, as the VU's leaves the buffer
         SetupOut s;
-        nativeSetup(v.data, top, itop, s, r->characters);
+        nativeSetup(v.data, top, itop, s, r->characters, r->uvTransform);
         for (uint32_t k = 0; k < s.position.size(); ++k) // (the batch rounded up to four vertices)
         {
             const uint32_t q = top + 4u * k;
             std::memcpy(v.data + 16u * (q & v.qwMask), s.position[k].data(), 16);
-            if (r->characters)
+            if (r->characters || r->uvTransform)
                 std::memcpy(v.data + 16u * ((q + 1) & v.qwMask), s.uv[k].data(), 16);
             std::memcpy(v.data + 16u * ((q + 2) & v.qwMask), s.colour[k].data(), 16);
             std::memcpy(v.data + 16u * ((q + 3) & v.qwMask), s.normal[k].data(), 16);
@@ -1028,7 +1070,7 @@ namespace shino::native3d
     {
         // everything but the output packets (the main renderer's 552-1007, the characters' 430-695)
         const ObjectRenderer &r = *g_objectRenderer;
-        ObjectStats &st = g_objects[r.characters ? 1 : 0];
+        ObjectStats &st = g_objects[static_cast<size_t>(&r - kObjectRenderers)];
         ++st.compared;
         uint32_t words = 0;
         for (uint32_t q = 0; q < 1024; ++q)
@@ -1055,7 +1097,7 @@ namespace shino::native3d
 
     void programStart(const vu::Unit &v, uint32_t top, uint32_t itop)
     {
-        g_rawValid = mode() == Mode::Verify && (g_packet == 0x539c30u || g_packet == 0x579a00u);
+        g_rawValid = mode() == Mode::Verify && objectRenderer(g_packet) != nullptr;
         if (!g_rawValid)
             return;
         g_raw.assign(v.data, v.data + 16384);
@@ -1250,16 +1292,16 @@ namespace shino::native3d
                         (unsigned long long)g_out.byField[1], (unsigned long long)g_out.byField[2], (unsigned long long)g_out.byField[3],
                         (unsigned long long)g_out.byField[4], (unsigned long long)g_out.byField[5], (unsigned long long)g_out.byField[6]);
         }
-        for (int r = 0; r < 2; ++r)
+        for (uint32_t r = 0; r < kObjectRendererCount; ++r)
             if (const SetupStats &st = g_setup[r]; st.batches)
                 std::printf("; native setup (%s) %llu batches (%llu with a light not read), %llu vertices: position %llu, UV %llu, normal %llu, colour %llu differ",
-                            r ? "characters" : "main", (unsigned long long)st.batches, (unsigned long long)st.unsupported,
+                            kObjectRenderers[r].name, (unsigned long long)st.batches, (unsigned long long)st.unsupported,
                             (unsigned long long)st.vertices, (unsigned long long)st.positionDiffers, (unsigned long long)st.uvDiffers,
                             (unsigned long long)st.normalDiffers, (unsigned long long)st.colourDiffers);
-        for (int r = 0; r < 2; ++r)
+        for (uint32_t r = 0; r < kObjectRendererCount; ++r)
         {
             const ObjectStats &o = g_objects[r];
-            const char *name = r ? "characters'" : "main";
+            const char *name = kObjectRenderers[r].name;
             if (o.objects)
                 std::printf("; %s objects %llu, %llu whole natively (%llu batches, %llu vertices; not: %llu by variant, %llu by light)", name,
                             (unsigned long long)o.objects, (unsigned long long)o.native, (unsigned long long)o.batches,

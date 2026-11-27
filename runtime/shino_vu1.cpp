@@ -929,6 +929,47 @@ namespace shino
             (void)reported;
         }
 
+        // SHINO_VU_JUMPS=1: each VU1 program run with every pair a stop, so each computed jump's target is seen: by
+        // microcode image, the programs' entries and the jumps' targets (the variants an object's setup chose), with the
+        // pairs each ran. At exit.
+        void jumpsRun(uint32_t pc)
+        {
+            static std::array<uint8_t, 2048> all = [] {
+                std::array<uint8_t, 2048> a{};
+                a.fill(1);
+                return a;
+            }();
+            static std::map<std::pair<uint32_t, uint32_t>, std::array<uint64_t, 2>> seen; // (image, pc): runs, pairs
+            static const bool reported = [] {
+                std::atexit([] {
+                    for (const auto &[k, n] : seen)
+                        std::printf("[shino:jumps] image %x pc %04x (pair %u): %llu, %llu pairs%c", k.first, k.second, k.second / 8,
+                                    (unsigned long long)n[0], (unsigned long long)n[1], 10);
+                });
+                return true;
+            }();
+            (void)reported;
+            Vu1 &v = *g_cur;
+            const int image = findImage(pc);
+            const uint32_t source = image >= 0 ? vu::kImages[image].source : 0u;
+            uint32_t at = pc | 0x10000u; // (an entry: marked)
+            for (int hops = 0; hops < 4096; ++hops)
+            {
+                const uint64_t before = v.pairs;
+                v.stopPairs = all.data();
+                g_stopped = false;
+                compiledFrom(pc);
+                v.stopPairs = nullptr;
+                auto &e = seen[{source, at}];
+                ++e[0];
+                e[1] += v.pairs - before;
+                if (!g_stopped)
+                    return;
+                pc = g_stoppedAt;
+                at = pc;
+            }
+        }
+
         void runCompiled(uint32_t pc)
         {
             static const bool verify = std::getenv("SHINO_VU_VERIFY") != nullptr;
@@ -1116,6 +1157,8 @@ namespace shino
                 if (compareObject) // the VU's run against native's
                     native3d::compareObject(v, objectNative.data());
             }
+            else if (static const bool jumps = std::getenv("SHINO_VU_JUMPS") != nullptr; jumps && !v.vu0 && compiledOn())
+                jumpsRun(pc);
             else if (static const bool poison = std::getenv("SHINO_VU_POISON") != nullptr; poison && !v.vu0 && compiledOn())
                 poisonRun(pc);
             else if (!g_traceThis && compiledOn() && (!v.vu0 || vu0Compiled))
