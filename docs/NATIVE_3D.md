@@ -320,6 +320,40 @@ A whole mission day: all 7.81M main and 2.16M character objects whole natively, 
 checksum the same with `SHINO_NATIVE_OBJECTS=0` and 1 (the town and the fight), and a town frame against the GS path
 0.33% of the pixels apart (edges).
 
+## Stage 2e: the other 3D renderers, and speed (2026-11-27)
+
+`SHINO_VU_JUMPS=1` (`shino_vu1.cpp`) runs each VU1 program with every pair a stop and counts, by microcode image, the
+programs' entries and computed jumps (the variants objects chose) and the pairs each ran: what is left on the VU and
+what it costs. Disassembling each image and diffing it against the known ones (branch targets ignored) then shows
+which code is which.
+
+- **Sets `0x5cc000` and `0x5e7cd0`** are the main renderer's and the characters' code with their buffers elsewhere
+  (`vi13` / `vi14` 544 / 750 and 430 / 565), their variants 21 pairs on, and one addition at the end of the setup: a
+  texture transform, each UV (the batch rounded up to four) becoming 958 + 956 u + 957 v. Their variants are the known
+  kinds (1044, 575, 1459 = 1023, 554, 1438; 665, 1134 = 644, 1113). The kinds table's replay entry "1044 under
+  `0x5e7cd0`" was `0x5cc000`'s and had never matched.
+- **Set `0x599510`** is the characters' code with its own variant table (657 used: flags `0x9`), its unlit setup
+  turning the normals too, three output buffers in turn (360, 473, 586) and a two-pass variant: 657 is 644 rescheduled
+  (the same values) and also stores each vertex's XYZF in the third buffer; its subroutine at `0x3bb8` kicks the
+  register packet at 959 (FOGCOL, TEX0_1) and the strip, then builds the second strip in the buffer holding those
+  XYZF: ST = (the normal through 963-965, less 966.xy) x -966.zw x the first pass's Q (an environment map: S / Q is that
+  vector), the colour times 965.w (x y z no more than 255), and kicks the packet at 956 (FOGCOL, TEX0_2) and the
+  second strip (its tag at 962). Natively: a two-pass kind draws both strips, the register packets sent as they are.
+
+Verify, the town and the final fight: the setups identical; every field of both strips' GS packets identical but fog on
+12 vertices of 5.0M (as before); whole objects' VU1 memory and TPC identical. Every object of the 3D renderers is now
+made natively: VU1 runs 0.01M pairs a flip in the fight (3.16M on the GS path), the rest the 2D (`0x4f3f60`), the
+sprites (`0x601710`) and VU0's own work. A whole mission day without a fault: every object of the main renderer
+(7.81M), the characters (2.16M), `0x5cc000` (27,032) and `0x5e7cd0` (45,678) whole natively, and 71,422 of `0x599510`'s
+71,485 (the rest its other variants); still on the VU, set `0x59d290`'s 520 (9,930 batches, replayed: its strips are
+not laid out as the batch, so they go to the GS translator).
+
+**Speed.** The profile showed the native path slower than the VU code it replaced (`vu1` 6.8 ms a flip against 6.2 in
+the fight's busy stretch): the setup did each lane alone with a branching clamp, and each batch allocated its vectors.
+The setup and the clip transform now go four lanes at a time with the VU model's own clamp (the same SSE operations, so
+the same bits: verify and the native checksums unchanged), and the buffers are kept: 3.3 ms, 82.5 flips a second
+there (54.9 before; the GS path 6.2 + 1.5 ms of GS translation).
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter

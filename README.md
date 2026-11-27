@@ -171,9 +171,8 @@ uploads); `SHINO_SAMPLE=<first flip>:<last flip>` samples the game thread into `
 compiled and interpreted and reports any difference. [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has the rest.
 
 Native 3D (experimental, off by default): `SHINO_NATIVE_3D=1` draws the 3D renderers' batches with BozoEngine's
-renderer instead of translating their GS packets, and makes the main renderer's and the characters' objects whole on
-the CPU (setup, skinning, lighting, drawing: no VU code for 99% of them; `SHINO_NATIVE_OBJECTS=0` keeps the VU for
-them). `SHINO_NATIVE_3D=verify` and `SHINO_NATIVE_OBJECTS=verify` compare the native work with the VU's.
+renderer instead of translating their GS packets, and makes their objects whole on the CPU (setup, skinning,
+lighting, environment mapping, drawing: no VU code for them; `SHINO_NATIVE_OBJECTS=0` keeps the VU for them). `SHINO_NATIVE_3D=verify` and `SHINO_NATIVE_OBJECTS=verify` compare the native work with the VU's.
 [docs/NATIVE_3D.md](docs/NATIVE_3D.md) has the details.
 
 ### Windows

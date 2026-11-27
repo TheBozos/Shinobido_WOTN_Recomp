@@ -37,6 +37,7 @@ namespace shino::native3d
             bool clipper;        // the main renderer's: ADC by the clip-space determinant, the clipper, the first pass written back
             bool replay = false; // the variant run (its kicks held), then its packets replayed: strips drawn natively
             bool list = false;   // a clipper's triangle list (three vertices a triangle) rather than strips
+            bool twoPass = false; // set 0x599510's 657: the strip again with an environment map (see batch())
         };
         constexpr Kind kKinds[] = {
             {0x539c30u, 1023u, 0x72du, true},  // the main renderer (next batches: MSCNT at 0x3968), flags 0xa / 0xb
@@ -51,9 +52,10 @@ namespace shino::native3d
             {0x5cc000u, 1459u, 0x742u, true, false, true}, // = 1438
             {0x5e7cd0u, 665u, 0x79cu, false},              // = 644
             {0x5e7cd0u, 1134u, 0x79cu, true},              // = 1113
+            // Set 0x599510 (the characters' code, its own variant table): 657 is 644 and the strip again, environment-mapped
+            {0x599510u, 657u, 0x74du, false, false, false, true},
             // Replayed: the variant's own GS packets, each strip drawn natively from the batch's positions (four quadwords a
             // vertex at vi1) where its vertices are the batch's own on the screen, the other packets as they are.
-            {0x599510u, 657u, 0x74du, false, true}, // set 0x599510 (MSCAL 0x3a68): each strip twice, a second texture
             {0x59d290u, 520u, 0x5f1u, false, true},  // set 0x59d290 (MSCAL 0x2f88)
         };
         constexpr uint32_t kKindCount = sizeof(kKinds) / sizeof(kKinds[0]);
@@ -84,7 +86,7 @@ namespace shino::native3d
         {
             uint64_t batches = 0, vertices = 0, positionDiffers = 0, uvDiffers = 0, normalDiffers = 0, colourDiffers = 0, unsupported = 0;
         };
-        std::array<SetupStats, 4> g_setup; // by kObjectRenderers
+        std::array<SetupStats, 5> g_setup; // by kObjectRenderers
 
         // What the setup leaves in the batch (four quadwords a vertex: position, UV, colour, normal), from the raw batch:
         // the colours and normals converted (itof0, the normals over 128), the positions and normals blended towards the
@@ -113,7 +115,7 @@ namespace shino::native3d
         template <int L> inline __m128 bc(__m128 x) { return _mm_shuffle_ps(x, x, _MM_SHUFFLE(L, L, L, L)); }
         inline void st4(std::array<float, 4> &d, __m128 x) { _mm_storeu_ps(d.data(), x); }
         inline __m128 ld4(const std::array<float, 4> &d) { return _mm_loadu_ps(d.data()); }
-        bool nativeSetupCore(const uint8_t *mem, uint32_t base, uint32_t count, SetupOut &out, bool skin)
+        bool nativeSetupCore(const uint8_t *mem, uint32_t base, uint32_t count, SetupOut &out, bool skin, bool unlitNormals)
         {
             auto F = [&](uint32_t qw, int i) {
                 float x;
@@ -181,11 +183,13 @@ namespace shino::native3d
                     st4(out.position[k], madd4(madd4(madd4(mul4(R[3], one), R[0], bc<0>(pos)), R[1], bc<1>(pos)), R[2], bc<2>(pos)));
                     st4(out.uv[k], uv);
                     __m128 colour = itof4(ldq(mem, in + 2));
-                    if (lit)
+                    if (lit || unlitNormals) // (set 0x599510: unlit, the normals turned as well, the colour times the material)
                     {
                         const __m128 n = morph ? madd4(mul4(itof4(ldq(mem, in + 3)), N1), itof4(ldq(mem, base + 6u * count + k)), N2)
                                                : mul4(itof4(ldq(mem, in + 3)), I128);
                         st4(out.normal[k], madd4(madd4(mul4(R[0], bc<0>(n)), R[1], bc<1>(n)), R[2], bc<2>(n)));
+                        if (!lit)
+                            colour = mul4(colour, mat);
                     }
                     else
                     {
@@ -346,9 +350,10 @@ namespace shino::native3d
 
         // Sets 0x5cc000 and 0x5e7cd0 (the main renderer's and the characters' code, their variants 21 pairs on) end their
         // setup with a texture transform: each UV (the batch rounded up to four) becomes 958 + 956 u + 957 v (x and y).
-        bool nativeSetup(const uint8_t *mem, uint32_t base, uint32_t count, SetupOut &out, bool skin, bool uvTransform)
+        bool nativeSetup(const uint8_t *mem, uint32_t base, uint32_t count, SetupOut &out, bool skin, bool uvTransform,
+                         bool unlitNormals = false)
         {
-            if (!nativeSetupCore(mem, base, count, out, skin))
+            if (!nativeSetupCore(mem, base, count, out, skin, unlitNormals))
                 return false;
             if (!uvTransform)
                 return true;
@@ -419,6 +424,54 @@ namespace shino::native3d
         float lane(const vu::Unit &v, uint32_t qw, int i) { return reinterpret_cast<const float *>(v.data + 16u * (qw & v.qwMask))[i]; }
         uint32_t word(const vu::Unit &v, uint32_t qw, int i) { return reinterpret_cast<const uint32_t *>(v.data + 16u * (qw & v.qwMask))[i]; }
 
+        float bitsAsFloat(uint32_t u)
+        {
+            float f;
+            std::memcpy(&f, &u, 4);
+            return f;
+        }
+        // Set 0x599510's second pass for a vertex (its subroutine at 0x3bb8): the normal (slot 3) through the matrix at
+        // 963-965, less 966.xy, times -966.zw and the first pass's Q (the ST the GS divides by that Q again: an
+        // environment map); the colour (slot 2) times 965.w, x y z no more than 255, by ftoi0. Each step as the VU's.
+        struct SecondPass
+        {
+            float s, t;
+            uint32_t rgba;
+        };
+        SecondPass secondPass(const vu::Unit &v, uint32_t q, float firstQ)
+        {
+            const __m128 n = ldq(v.data, q + 3), c = ldq(v.data, q + 2);
+            const __m128 m = madd4(madd4(mul4(ldq(v.data, 963), bc<0>(n)), ldq(v.data, 964), bc<1>(n)), ldq(v.data, 965), bc<2>(n));
+            const __m128 k966 = ldq(v.data, 966);
+            const __m128 st = cl(_mm_sub_ps(m, _mm_mul_ps(k966, _mm_set1_ps(1.0f)))); // MSUBw: ACC - 966 vf0.w
+            alignas(16) float a[4], k[4];
+            _mm_store_ps(a, st);
+            _mm_store_ps(k, k966);
+            const float zs = vu::clampF(0.0f - k[2]), ws = vu::clampF(0.0f - k[3]);
+            SecondPass r;
+            r.s = vu::clampF(a[0] * vu::clampF(zs * firstQ));
+            r.t = vu::clampF(a[1] * vu::clampF(ws * firstQ));
+            // MULw.xyz by 965.w, MINIi.xyz 255, FTOI0 (w as it is)
+            const float scale = lane(v, 965, 3);
+            alignas(16) float col[4];
+            _mm_store_ps(col, c);
+            uint32_t rgba = 0;
+            for (int i = 0; i < 4; ++i)
+            {
+                float x = col[i];
+                if (i < 3)
+                {
+                    x = vu::clampF(x * scale);
+                    x = std::isnan(x) || !(255.0f < x) ? x : 255.0f; // min_ps(255, x)
+                    x = vu::clampF(x);
+                }
+                rgba |= (static_cast<uint32_t>(ftoi(x, 1.0f)) & 0xFFu) << (8 * i);
+            }
+            r.rgba = rgba;
+            return r;
+        }
+
+
         // ---- Whole objects natively (SHINO_NATIVE_OBJECTS) ----------------------------------------------------------
         // The main renderer's object whose variant is drawn natively and whose lights are all read: none of its programs
         // run on the VU (its setup and batches made here).
@@ -430,20 +483,26 @@ namespace shino::native3d
             uint64_t objects = 0, native = 0, batches = 0, vertices = 0, compared = 0, differs = 0, words = 0, tpcDiffers = 0;
             std::array<uint64_t, 2> notNative{}; // a variant not computed here, a light not read
         };
-        std::array<ObjectStats, 4> g_objects; // by kObjectRenderers
+        std::array<ObjectStats, 5> g_objects; // by kObjectRenderers
 
         // The setup's choice of variant (pairs 0x28-0x188) from the flags (1023.x): bit 1 the clipping camera, then bits
         // 3, 2 and 0; the main renderer's entries, or the characters' (the same code, their own variants).
-        uint32_t variantOf(uint32_t flags, bool characters)
+        // A renderer's variant entries in the setup's order: bit 1 set: bit 3 (bit 2 set, clear), then bit 2 set (bit 0 set,
+        // clear), bit 2 clear (bit 0 set, clear); bit 1 clear: bit 2 set (bit 0 set, clear), bit 2 clear (bit 0 set, clear).
+        using VariantTable = std::array<uint32_t, 10>;
+        constexpr VariantTable kMainVariants = {1438u, 1023u, 947u, 785u, 843u, 710u, 642u, 499u, 554u, 434u};
+        constexpr VariantTable kCharacterVariants = {1528u, 1113u, 1037u, 875u, 933u, 800u, 732u, 589u, 644u, 524u};
+        constexpr VariantTable k599510Variants = {1514u, 1149u, 1071u, 905u, 965u, 815u, 746u, 602u, 657u, 534u};
+        uint32_t variantOf(uint32_t flags, const VariantTable &t)
         {
             const bool b0 = flags & 1u, b2 = flags & 4u, b3 = flags & 8u;
             if (flags & 2u)
             {
                 if (b3)
-                    return characters ? (b2 ? 1528u : 1113u) : (b2 ? 1438u : 1023u);
-                return characters ? (b2 ? (b0 ? 1037u : 875u) : (b0 ? 933u : 800u)) : (b2 ? (b0 ? 947u : 785u) : (b0 ? 843u : 710u));
+                    return b2 ? t[0] : t[1];
+                return b2 ? (b0 ? t[2] : t[3]) : (b0 ? t[4] : t[5]);
             }
-            return characters ? (b2 ? (b0 ? 732u : 589u) : (b0 ? 644u : 524u)) : (b2 ? (b0 ? 642u : 499u) : (b0 ? 554u : 434u));
+            return b2 ? (b0 ? t[6] : t[7]) : (b0 ? t[8] : t[9]);
         }
         // The renderers made whole here: the microcode, the next batches' program (MSCNT's TPC), the output buffers
         // (left out of verify's compare), and whether the batch comes in skinned (five quadwords a vertex).
@@ -454,12 +513,16 @@ namespace shino::native3d
             uint32_t variantOffset; // its variants' entries past the template's
             bool uvTransform;       // its setup ends with the texture transform (956-958)
             const char *name;
+            const VariantTable *own = nullptr; // its own variant table (else the template's, plus variantOffset)
+            bool unlitNormals = false;         // unlit, its setup turns the normals too (set 0x599510)
         };
         constexpr ObjectRenderer kObjectRenderers[] = {
             {0x539c30u, 0x72du, 552u, 1008u, false, 0u, false, "main"},       // 1023, 554, 1438 native
             {0x579a00u, 0x787u, 430u, 696u, true, 0u, false, "characters'"}, // 644, 1113 native (the bones from 696)
             {0x5cc000u, 0x742u, 544u, 956u, false, 21u, true, "0x5cc000"},   // the main renderer's, the UVs transformed
             {0x5e7cd0u, 0x79cu, 430u, 696u, true, 21u, true, "0x5e7cd0"},    // the characters', the UVs transformed
+            // the characters' code, three output buffers in turn (360, 473, 586) and the second pass's constants (956-966)
+            {0x599510u, 0x74du, 360u, 696u, true, 0u, false, "0x599510", &k599510Variants, true}, // 657 native
         };
         constexpr uint32_t kObjectRendererCount = sizeof(kObjectRenderers) / sizeof(kObjectRenderers[0]);
         const ObjectRenderer *g_objectRenderer = nullptr;
@@ -472,6 +535,8 @@ namespace shino::native3d
         }
         bool variantNative(const ObjectRenderer &r, uint32_t variant)
         {
+            if (r.own)
+                return variant == 657u; // set 0x599510's
             const uint32_t v = variant - r.variantOffset;
             return r.characters ? v == 644u || v == 1113u : v == 1023u || v == 554u || v == 1438u;
         }
@@ -575,7 +640,7 @@ namespace shino::native3d
             SetupOut s;
             SetupStats &st = g_setup[static_cast<size_t>(setupOf - kObjectRenderers)];
             ++st.batches;
-            if (!nativeSetup(g_raw.data(), base, count, s, skin, setupOf->uvTransform))
+            if (!nativeSetup(g_raw.data(), base, count, s, skin, setupOf->uvTransform, setupOf->unlitNormals))
                 ++st.unsupported;
             else
                 for (uint32_t k = 0; k < s.position.size(); ++k) // (the batch rounded up to four)
@@ -923,6 +988,20 @@ namespace shino::native3d
                     o.adc = (word3 >> 15) & 1u;
                 }
             }
+            if (kind.twoPass) // the second strip: ST and Q, RGBA of the second pass, XYZF the first's
+            {
+                const size_t first = g_last.out.size();
+                for (uint32_t k = 0; k < count; ++k)
+                {
+                    Out o = g_last.out[k];
+                    const SecondPass sp = secondPass(v, base + 4u * k, bitsAsFloat(o.q));
+                    o.s = bitsOf(sp.s);
+                    o.t = bitsOf(sp.t);
+                    o.rgba = sp.rgba;
+                    g_last.out.push_back(o);
+                }
+                (void)first;
+            }
             g_kicked.clear();
             g_capturing = true;
             g_fastPath = true; // no vertex outside a clip plane: the variant's output loop, not its clipper
@@ -933,12 +1012,51 @@ namespace shino::native3d
             g_last.clip = clip;
             g_last.adc = adc;
         }
-        if (!submit || triangles.empty())
+        if (!submit)
             return;
         // The vertex GIF tag (1018): PRIM in its word 1 (bits 15-25) when PRE is set (bit 14).
-        const uint32_t tag1 = word(v, 1018, 1);
-        const uint64_t prim = (tag1 >> 14) & 1u ? (tag1 >> 15) & 0x7FFu : ~0ull;
-        gs::nativeTriangles(prim, matrix, triangles.data(), static_cast<uint32_t>(triangles.size()));
+        auto primOf = [&](uint32_t tag) {
+            const uint32_t tag1 = word(v, tag, 1);
+            return (tag1 >> 14) & 1u ? uint64_t((tag1 >> 15) & 0x7FFu) : ~0ull;
+        };
+        if (kind.twoPass)
+        {
+            // Set 0x599510's 657 (its subroutine at 0x3bb8): the register packet at 959 (FOGCOL, TEX0_1), the strip; the one
+            // at 956 (FOGCOL, TEX0_2), the strip again with the second pass's UVs and colours (its own tag at 962).
+            static std::vector<bozo::render::Vertex> second;
+            second.clear();
+            static std::vector<bozo::render::Vertex> corner2;
+            corner2.assign(corner.begin(), corner.end());
+            const float kz = lane(v, 1014, 2);
+            for (uint32_t k = 0; k < count; ++k)
+            {
+                const uint32_t q = base + 4u * k;
+                const float px = lane(v, q, 0), py = lane(v, q, 1), pz = lane(v, q, 2);
+                float wk = row[3][3] * kz;
+                wk = wk + (row[0][3] * kz) * px;
+                wk = wk + (row[1][3] * kz) * py;
+                wk = wk + (row[2][3] * kz) * pz;
+                const float Q = kz / wk;
+                const SecondPass sp = secondPass(v, q, Q);
+                corner2[k].u = sp.s / Q;
+                corner2[k].v = sp.t / Q;
+                corner2[k].rgba = sp.rgba;
+            }
+            for (uint32_t k = 2; k < count; ++k)
+                if (!adc[k])
+                    for (uint32_t j = k - 2; j <= k; ++j)
+                        second.push_back(corner2[j]);
+            gs::path1(v.data, 959);
+            if (!triangles.empty())
+                gs::nativeTriangles(primOf(1018), matrix, triangles.data(), static_cast<uint32_t>(triangles.size()));
+            gs::path1(v.data, 956);
+            if (!second.empty())
+                gs::nativeTriangles(primOf(962), matrix, second.data(), static_cast<uint32_t>(second.size()));
+            return;
+        }
+        if (triangles.empty())
+            return;
+        gs::nativeTriangles(primOf(1018), matrix, triangles.data(), static_cast<uint32_t>(triangles.size()));
     }
 
     void compare(const vu::Unit &v)
@@ -1013,7 +1131,8 @@ namespace shino::native3d
         if (pc == 0) // an object's setup: native when its variant and its lights are
         {
             ++st.objects;
-            const uint32_t variant = variantOf(word(v, 1023, 0) & 0xFFFFu, r->characters) + r->variantOffset;
+            const uint32_t flags = word(v, 1023, 0) & 0xFFFFu;
+            const uint32_t variant = r->own ? variantOf(flags, *r->own) : variantOf(flags, r->characters ? kCharacterVariants : kMainVariants) + r->variantOffset;
             const bool native = variantNative(*r, variant);
             const bool lit = (word(v, 980, 3) & 0xFFFFu) != 0;
             g_objectNative = native && (!lit || lightsRead(v.data));
@@ -1034,7 +1153,7 @@ namespace shino::native3d
         st.vertices += itop;
         // The setup in place: positions (skinned, morphed), UVs, colours (lit), normals, as the VU's leaves the buffer
         static SetupOut s; // (kept: no allocation a batch)
-        nativeSetup(v.data, top, itop, s, r->characters, r->uvTransform);
+        nativeSetup(v.data, top, itop, s, r->characters, r->uvTransform, r->unlitNormals);
         for (uint32_t k = 0; k < s.position.size(); ++k) // (the batch rounded up to four vertices)
         {
             const uint32_t q = top + 4u * k;
