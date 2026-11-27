@@ -36,16 +36,17 @@ namespace shino::native3d
             uint32_t packet, variant, program;
             bool clipper;        // the main renderer's: ADC by the clip-space determinant, the clipper, the first pass written back
             bool replay = false; // the variant run (its kicks held), then its packets replayed: strips drawn natively
+            bool list = false;   // a clipper's triangle list (three vertices a triangle) rather than strips
         };
         constexpr Kind kKinds[] = {
             {0x539c30u, 1023u, 0x72du, true},  // the main renderer (next batches: MSCNT at 0x3968), flags 0xa / 0xb
             {0x539c30u, 554u, 0x72du, false},  // the main renderer, its unclipped variant (the characters' 644, the same code)
+            {0x539c30u, 1438u, 0x72du, true, false, true}, // the main renderer's clipped triangle lists (flags 0xe / 0xf)
             {0x579a00u, 644u, 0x787u, false},  // the characters' (MSCNT at 0x3c38), flags 0x9: no clipping, screen-space culling
+            {0x579a00u, 1113u, 0x787u, true},  // the characters' clipped variant (flags 0xb): the main 1023's code, smaller buffers
             // Replayed: the variant's own GS packets, each strip drawn natively from the batch's positions (four quadwords a
             // vertex at vi1) where its vertices are the batch's own on the screen, the other packets as they are.
             {0x599510u, 657u, 0x74du, false, true}, // set 0x599510 (MSCAL 0x3a68): each strip twice, a second texture
-            {0x539c30u, 1438u, 0x72du, false, true}, // the main renderer's other clipped variant (flags 0xe / 0xf)
-            {0x579a00u, 1113u, 0x787u, false, true}, // the characters' clipped variant (flags 0xb)
             {0x59d290u, 520u, 0x5f1u, false, true},  // set 0x59d290 (MSCAL 0x2f88)
             {0x5e7cd0u, 1044u, 0x742u, false, true}, // set 0x5e7cd0 (MSCAL 0x3a10)
         };
@@ -443,7 +444,7 @@ namespace shino::native3d
         const ObjectRenderer *g_objectRenderer = nullptr;
         bool variantNative(const ObjectRenderer &r, uint32_t variant)
         {
-            return r.characters ? variant == 644u : variant == 1023u || variant == 554u;
+            return r.characters ? variant == 644u || variant == 1113u : variant == 1023u || variant == 554u || variant == 1438u;
         }
         // The light list at 980 has only the types nativeSetup reads (0 ends it; 2 a constant colour; 128 a point light;
         // 129 a spotlight).
@@ -603,7 +604,8 @@ namespace shino::native3d
 
         // The first pass covers the vertices in pairs (to vi11 = vi1 + (4 count + 4 & 0x7ff8)): one past the batch's
         // own when the count is odd.
-        const uint32_t passed = kind.clipper ? std::max<uint32_t>(((4u * count + 4u) & 0x7FF8u) / 4u, 2u) : count;
+        // (a list's: three at a time, the batch's own)
+        const uint32_t passed = kind.clipper && !kind.list ? std::max<uint32_t>(((4u * count + 4u) & 0x7FF8u) / 4u, 2u) : count;
         std::vector<std::array<float, 4>> clip(passed);
         std::vector<uint16_t> adc(passed, 0);
         std::vector<bozo::render::Vertex> corner(count);
@@ -712,7 +714,14 @@ namespace shino::native3d
                 adc[k] = sign != cull ? 0x8000u : 0u;
             }
         }
-        for (uint32_t k = 2; kind.clipper && k < passed; ++k)
+        // A triangle list's (1438): each triangle's facing, cross(v1, v0) . v2, on its third vertex; the first two 0.
+        for (uint32_t k = 2; kind.clipper && kind.list && k < passed; k += 3)
+        {
+            const float d = dot(cross(clip[k - 1], clip[k - 2]), clip[k]);
+            const uint16_t sign = std::signbit(d) ? 32u : 0u;
+            adc[k] = static_cast<uint16_t>(mode7 + sign) & 0x8000u;
+        }
+        for (uint32_t k = 2; kind.clipper && !kind.list && k < passed; ++k)
         {
             float d;
             if ((k & 1u) == 0)
@@ -731,17 +740,21 @@ namespace shino::native3d
         // whose corners are outside one plane is rejected, as the variant's clipper does; the others are drawn whole and
         // the GPU clips them (a triangle reaching behind the camera too: the renderer's w).
         const float guardX = lane(v, 1021, 1), guardY = lane(v, 1022, 1), depth0 = lane(v, 1021, 2), depth1 = lane(v, 1022, 2);
-        std::vector<uint8_t> outside(count);
-        for (uint32_t k = 0; kind.clipper && k < count; ++k)
+        std::vector<uint8_t> outside(passed);
+        for (uint32_t k = 0; kind.clipper && k < passed; ++k)
         {
             const float x = clip[k][0] * guardX, y = clip[k][1] * guardY, w = clip[k][3], aw = std::fabs(w);
             const float z = depth0 + depth1 * w;
             outside[k] = static_cast<uint8_t>((x > aw ? 1u : 0u) | (x < -aw ? 2u : 0u) | (y > aw ? 4u : 0u) | (y < -aw ? 8u : 0u) |
                                               (z > aw ? 16u : 0u) | (z < -aw ? 32u : 0u));
         }
+        // Every vertex the first pass went over outside one plane: the variant draws none of the batch.
+        uint8_t allOutside = kind.clipper ? 63u : 0u;
+        for (uint32_t k = 0; kind.clipper && k < passed; ++k)
+            allOutside &= outside[k];
         std::vector<bozo::render::Vertex> triangles;
         triangles.reserve(count * 3);
-        for (uint32_t k = 2; k < count; ++k)
+        for (uint32_t k = 2; k < count && !allOutside; k += kind.list ? 3u : 1u)
         {
             if (adc[k])
             {

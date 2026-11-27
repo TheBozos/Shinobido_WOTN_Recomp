@@ -141,6 +141,9 @@ them mixing vertex 4's position with a later vertex's ST and Q, and the batch's 
 first pass over the same buffer matched exactly, so this comes from the output loop's software pipeline (loads,
 DIV's 7-cycle Q and stores overlapped across vertices): either the port's VU timing or the console itself does it.
 It touches degenerate triangles and a batch's last two; which side is right needs a reference from a console.
+(Corrected in stage 2d: those batches were not the fast path's. The first pass goes one vertex past an odd batch, a
+stale one, and when that vertex is outside a clip plane the variant takes its clipper, whose packets are laid out
+differently. Counting that vertex, the fast path's packets agree in every field but a few fogs.)
 
 `SHINO_NATIVE_3D=skip` leaves the variant out (its first pass's memory results written back): the registers it would
 leave are then missing, so lit passes come out wrong; it is there for finding what later programs read.
@@ -159,8 +162,7 @@ where its sign differs from the cull mode (1023.z), carried by 2048.5 added to t
 
 `runtime/shino_native3d.cpp` takes it over the same way (a table of kinds: the microcode, the variant's entry, the next
 batches' program, what the variant does with a strip). Verify reads its packets too: on the frame-5200 play 2.57M
-packet vertices and on the final fight 9.67M, 99.9% identical in every field (the rest the strip restarts' pipeline
-effect); frame-exact captures with both renderers native differ at about 1.2% of the pixels (edges); a mission day
+packet vertices and on the final fight 9.67M, 99.9% identical in every field (the rest the clipper's, see stage 2d); frame-exact captures with both renderers native differ at about 1.2% of the pixels (edges); a mission day
 (12.6M batches) without a fault.
 
 ## Stage 1c: the stop set and the remaining variants (2026-11-27)
@@ -293,6 +295,30 @@ town and the fight), and the game's RAM is the same at frame 2306600.
 
 Time, headless: 1,000 frames of the town 8.2 s (9.5 s with stage 1), 500 of the final fight 6.4 s (7.2 s). A whole
 mission day: 2.16M character objects, 99.2% whole natively (and the main renderer's 7.81M, 99.9%), no fault.
+
+## Stage 2d: the clipped variants (2026-11-27)
+
+**The characters' 1113** (flags `0xb`) is the main renderer's 1023 instruction for instruction but for its clipper's
+buffer offsets (its output buffers are smaller) and the absolute branch targets: the clipper kind draws it, the first
+pass written back the same way.
+
+**The main renderer's 1438** (flags `0xe` / `0xf`) is 1023 for triangle lists: its first pass goes three vertices at a
+time (to the batch's own end), stores each one's clip position, and writes the facing only on each triangle's third
+vertex (slot 1's w: `(mode + 0x7fe0 | 0x7fe0) + 32 if cross(v1, v0) . v2 is negative`, bit 15; the first two 0, no
+strip parity); a batch all of whose vertices are outside one plane is skipped, otherwise the clip flags choose the fast
+output or the clipper. Natively: a `list` kind (triangles 0-1-2, 3-4-5, ...), the same clipping as 1023.
+
+For both kinds the batch-level skip is now native too: when every vertex the first pass went over (the stale one past
+an odd strip batch included) is outside the same plane, nothing is drawn, as the variant does.
+
+Verify (`SHINO_NATIVE_3D=verify`, the town and the final fight): clip positions and ADC identical (268,788 and 680,840
+batches), and the fast path's GS packets identical in every field but fog on 12 and 37 of 4.27M and 15.5M vertices.
+Whole objects (`SHINO_NATIVE_OBJECTS=verify`): all of both renderers' objects of the town (85,386 and 37,517) and of
+the fight (219,399 and 76,400) made natively, VU1 memory and TPC identical. What is left on the VU there: the light
+types 1 and 130 (none in these runs), the characters' list variant 1528 (none either), and the other renderers.
+A whole mission day: all 7.81M main and 2.16M character objects whole natively, no fault; the native batches'
+checksum the same with `SHINO_NATIVE_OBJECTS=0` and 1 (the town and the fight), and a town frame against the GS path
+0.33% of the pixels apart (edges).
 
 ## The plan
 
