@@ -23,9 +23,9 @@ namespace shino::gs
         float s = 0, t = 0, q = 1;
         bool adc = false;
     };
-    // Widescreen (Hor+): the picture shown at 16:9, the game's views drawn 3/4 as wide around the screen's centre so
-    // more of them shows at the sides; Screen::Place for the 2D: the particles (in the 3D's place) or the HUD (each
-    // triangle towards its third of the screen: the left edge, the centre or the right edge, its own shape kept).
+    // Widescreen (Hor+): the picture shown at 16:9, the main camera's view widened by the game itself (shino_port.cpp);
+    // Place for the 2D: the particles (in the 3D's place: as their view is) or the HUD (each triangle 3/4 as wide
+    // towards its third of the screen: the left edge, the centre or the right edge, its own shape kept).
     enum class Place
     {
         Scene,
@@ -36,6 +36,16 @@ namespace shino::gs
     // shape for the frame flipped (16:9 or the default). SHINO_WIDESCREEN=1 wants it without a window (tests).
     extern bool (*widescreenWanted)();
     extern void (*widescreenShown)(bool wide);
+    bool widescreenOn(); // wanted now (the setting, SHINO_WIDESCREEN)
+    // The view whose draws follow, as the port marks its GS set-up (DTHE's bits 8-15, shino_port.cpp): the main camera's
+    // (widened for 16:9 by the game itself, or not) or another's (the radar's: its draws anchored as the HUD is).
+    enum class ViewKind : uint8_t
+    {
+        Unmarked = 0,
+        MainWide = 1,
+        Main = 2,
+        Other = 3,
+    };
     // A GS register written with its raw value (PRIM 0x00 ... LABEL 0x62): A+D, REGLIST, a tag's PRE.
     void writeRegister(uint32_t address, uint64_t value);
     // A PACKED quadword for register descriptor `r` (0x0 PRIM ... 0xe A+D, 0xf NOP).

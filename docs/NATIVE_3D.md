@@ -405,21 +405,42 @@ chunks); the GS translator's checksum the same with the 2D native and on the VU 
 fight, flips 250 and 500. A mission day: 944,541 HUD programs (1.91M triangles) and 25,930 particles natively, no
 fault. What is left on the GS translator: the screen clears (VIF1 DIRECT) and set `0x59d290`'s 520.
 
-## Widescreen, first step (2026-11-27)
+## Widescreen (2026-11-27)
 
 The Video tab's Widescreen (BozoEngine's `video::Settings::widescreen`; `PS2X_WIDESCREEN`, or `SHINO_WIDESCREEN=1` for a
-hidden run) now works for a shown window: the port loads the player's video settings (`video::loadAtStartup`, the
-command line's `--fullscreen` over them; a hidden scripted run keeps the window's defaults), offers widescreen, and
-draws its views Hor+: the native 3D (`gs::nativeTriangles`: the matrix's x 3/4 as wide around the screen's centre) and
-the particles 3/4 as wide around the centre, the HUD's triangles each towards its third of the screen (the left edge,
-the centre or the right edge: its own shape kept), and the window shows the picture 16:9
-(`video::setPictureAspect`). Only a frame that drew 3D is widened, from the frame after (the movies and the menus'
-pictures stay 4:3; a frame is shown 16:9 only when it was drawn so).
+hidden run) works for a shown window: the port loads the player's video settings (`video::loadAtStartup`, the command
+line's `--fullscreen` over them; a hidden scripted run keeps the window's defaults), offers widescreen, and the window
+shows the picture 16:9 (`video::setPictureAspect`) for each frame the game drew so.
 
-What it lacks: the game culls its objects for its own 4:3 view, so at the new sides walls and ground pieces are missing.
-Widening the game's own projection would widen its culling too; the camera's view-projection is only found in the DMA
-packets it builds (never stored in RAM; likely made in the scratchpad), and its horizontal scale (0.901: a 70 degree
-view) is not a value stored anywhere either: the camera code is still to read.
+**At the game's own source.** A first step squeezed the native 3D's matrices at the draw; the game still culled for
+its 4:3 view, so walls and ground were missing at the new sides. The camera code, read since:
+
+- A camera (`0x10ab70`, `0x10ad34` make one; `+0xf4` its view) sets its view's tangents each frame at `0x10b1d0`:
+  vertical `+0x110` (0.5), horizontal `+0x10c` times the aspect `gp-0x7ee4` (4/3, from `0x10b150`'s width / height),
+  through `0x438520` (view `+0x68` / `+0x6c` the tangents, `+0x70` / `+0x74` their inverses).
+- From them the view builds its projection (`0x4377a0`: view `+0x20`, x scale -0.5 / tan, the centre 0.5 plus `+0x78`'s
+  shift), its frustum's corners (`+0x110`: near at 1, far at `+0x84`; the guard band's at `+0x190`), and each scene
+  pass (`0x446f30`) its culling planes from those corners (cross products, normalized, the signs of their normals kept
+  for the box tests) and the clipper's from the guard band; the view-projection the renderers upload (1008-1011) is
+  that projection times the camera.
+- The main camera is the first a scene makes (`gp-0x6d44`, `0x625a2c`); each scene has one more, the radar's (at the
+  origin, its needle placed in its view's top right).
+
+So the port widens the main camera's horizontal tangent 4/3 (native site `0x10b1f0`, the `mul.s` of the tangent by the
+aspect) when widescreen is wanted: the game projects, culls and clips for 16:9 itself, the GS path's draws and the
+particles (`0x601710`) included, nothing squeezed at the draw. The radar's camera keeps its 4:3 view: its needle is
+drawn as the HUD is, 3/4 as wide towards its side of the screen (the right edge, with its 2D ring). To know whose
+draws follow, each scene pass's GS set-up is marked (native site `0x44735c`, the `pcpyld` that pairs DTHE's value
+with its address: the view's kind in bits 8-15, DTHE drawing nothing): the main view widened, the main view, or
+another. A frame is shown 16:9 when its main view was widened and drew (natively or through the GS packets); the
+movies and the menus' pictures stay 4:3. `SHINO_TRACE_FOV` prints each camera's tangent, `SHINO_TRACE_WIDE` the
+frame's marks.
+
+Checked (`SHINO_WIDESCREEN=1`, captures): the town, a mission, the Hideout and the final fight fill the screen's sides
+(the ground at the bottom corners, the walls), the radar's needle in its ring; 4:3 is unchanged (the same picture,
+byte for byte). Left: the 2D the GS packets draw (the Hideout's dialogs, the menus over a 3D scene) is shown
+stretched in a 16:9 frame (only the HUD's program, `0x4f3f60`, is narrowed); with `SHINO_NATIVE_3D=0` the radar's
+needle is not anchored.
 
 ## The plan
 
@@ -436,5 +457,4 @@ view) is not a value stored anywhere either: the camera code is still to read.
    from there and stop building the packets. Meshes and textures read once per model (or converted offline into the
    engine's mesh and texture packs: `bozo/render/mesh_pack.h`, `texture_pack.h`).
 5. **2D, particles and effects**: the HUD, menus, text, the afterimage and the screen effects, natively.
-6. **What it opens**: resolution and anti-aliasing (the engine's video settings), widescreen from the camera (not a
-   squeezed picture), 60 frames a second from the game's own timer (RECOMP_NOTES.md), texture packs.
+6. **What it opens**: resolution and anti-aliasing (the engine's video settings), widescreen from the camera (done: "Widescreen"), 60 frames a second from the game's own timer (RECOMP_NOTES.md), texture packs.

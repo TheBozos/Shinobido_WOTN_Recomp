@@ -832,10 +832,13 @@ namespace shino::gs
                     g_checksum = (g_checksum ^ b) * 0x100000001B3ull;
         }
 
+        void noteDraw(); // widescreen: a draw of the widened main view makes the frame a 16:9 one (below)
+
         void emit(const GsVertex *v, uint32_t count, uint32_t type, uint64_t attrs)
         {
             if (type == 0 || type == 7)
                 return; // points, the undefined type: not drawn
+            noteDraw();
             const Maker make = makerFor(attrs);
             const Context &c = *make.c;
             const bool textured = make.textured, fst = make.fst, gouraud = make.gouraud;
@@ -1070,6 +1073,7 @@ namespace shino::gs
                             make = makerFor(attrs);
                             drawn = targetFor(make, into, alsoInto);
                             placed = true;
+                            noteDraw();
                         }
                         ++g_prims;
                         const GsVertex *t = g_queue.data() + g_queue.size() - 3;
@@ -1110,11 +1114,30 @@ namespace shino::gs
 
     bool (*widescreenWanted)() = nullptr;
     void (*widescreenShown)(bool) = nullptr;
+    bool widescreenOn()
+    {
+        static const bool fromEnvironment = std::getenv("SHINO_WIDESCREEN") && *std::getenv("SHINO_WIDESCREEN") == '1';
+        return fromEnvironment || (widescreenWanted && widescreenWanted());
+    }
     namespace
     {
-        float g_wide = 1.0f;       // this frame's horizontal scale (3/4 while widescreen)
-        bool g_frameHad3D = false; // a native 3D draw this frame
+        constexpr float kWide = 0.75f;        // a 4:3 picture's width in a 16:9 one
+        ViewKind g_view = ViewKind::Unmarked; // the view whose draws follow (its GS set-up's mark)
+        bool g_frameWide = false;             // this frame's main view widened (the game drew it for 16:9)
+        bool g_frameHad3D = false;            // a draw of the widened main view this frame (native or the GS packets')
+        bool g_lastWide = false;              // the frame before shown 16:9
+        // the 2D and the other views' draws narrowed: this frame's main view widened so far, or the last frame's (the HUD
+        // may come before the 3D)
+        bool narrowing() { return g_frameWide || g_lastWide; }
+        void noteDraw()
+        {
+            if (g_view == ViewKind::MainWide)
+                g_frameHad3D = true;
+        }
         float frameWidth(const Context &c) { return float(((c.frame >> 16) & 0x3Fu) * 64u); }
+        // Where a 4:3 drawing at screen x stays put in the 16:9 picture: the left edge, the centre or the right edge
+        // for x in the screen's left, middle or right third (the HUD's elements keep to their side).
+        float anchorFor(float x, float width) { return x < width / 3.0f ? 0.0f : x > width * 2.0f / 3.0f ? width : width * 0.5f; }
     }
 
     void screenPrimitives(uint64_t prim, const ScreenVertex *vertices, uint32_t count, Place place)
@@ -1124,7 +1147,10 @@ namespace shino::gs
         const Context &c = g_s.ctx[(attrs >> 9) & 1u];
         const uint32_t type = attrs & 7u;
         static const uint32_t need[8] = {1, 2, 2, 3, 3, 3, 2, 1};
-        const float width = frameWidth(c), k = g_wide;
+        // widescreen: the HUD's triangles (and any 2D of another view than the main) 3/4 as wide towards their side; the
+        // main view's own (its particles) already drawn for 16:9 by the game
+        const float width = frameWidth(c);
+        const bool narrow = narrowing() && width > 0.0f && (place == Place::Hud || g_view == ViewKind::Other);
         GsVertex g[3];
         for (uint32_t i = 0; i + need[type] <= count; i += need[type])
         {
@@ -1141,19 +1167,14 @@ namespace shino::gs
                 v.u = w.s;
                 v.v = w.t;
             }
-            if (k != 1.0f && width > 0.0f) // widescreen: 3/4 as wide, around the centre or towards the HUD's own edge
+            if (narrow)
             {
-                float anchor = width * 0.5f;
-                if (place == Place::Hud)
-                {
-                    float centre = 0.0f;
-                    for (uint32_t j = 0; j < need[type]; ++j)
-                        centre += g[j].x;
-                    centre /= float(need[type]);
-                    anchor = centre < width / 3.0f ? 0.0f : centre > width * 2.0f / 3.0f ? width : width * 0.5f;
-                }
+                float centre = 0.0f;
                 for (uint32_t j = 0; j < need[type]; ++j)
-                    g[j].x = anchor + (g[j].x - anchor) * k;
+                    centre += g[j].x;
+                const float anchor = anchorFor(centre / float(need[type]), width);
+                for (uint32_t j = 0; j < need[type]; ++j)
+                    g[j].x = anchor + (g[j].x - anchor) * kWide;
             }
             if (!vertices[i + need[type] - 1].adc)
                 emit(g, need[type], type, attrs);
@@ -1185,10 +1206,18 @@ namespace shino::gs
             m[4 * col + 0] -= ox * m[4 * col + 3];
             m[4 * col + 1] -= oy * m[4 * col + 3];
         }
-        g_frameHad3D = true;
-        if (const float width = frameWidth(c); g_wide != 1.0f && width > 0.0f) // widescreen: 3/4 as wide around the centre
+        noteDraw();
+        // Widescreen: the main view drawn for 16:9 by the game; another view's draw (the radar's) 3/4 as wide towards
+        // the side its middle vertex is on, as the HUD's
+        if (const float width = frameWidth(c); narrowing() && g_view == ViewKind::Other && width > 0.0f && count)
+        {
+            const Vertex &v = vertices[count / 2];
+            const float w = m[3] * v.x + m[7] * v.y + m[11] * v.z + m[15];
+            const float x = m[0] * v.x + m[4] * v.y + m[8] * v.z + m[12];
+            const float anchor = w != 0.0f ? anchorFor(x / w, width) : width * 0.5f;
             for (int col = 0; col < 4; ++col)
-                m[4 * col + 0] = g_wide * m[4 * col + 0] + (1.0f - g_wide) * width * 0.5f * m[4 * col + 3];
+                m[4 * col + 0] = kWide * m[4 * col + 0] + (1.0f - kWide) * anchor * m[4 * col + 3];
+        }
         Batch *into = nullptr, *alsoInto = nullptr;
         if (!targetFor(make, into, alsoInto, &m))
             return;
@@ -1230,6 +1259,11 @@ namespace shino::gs
             break;
         }
         case 0x18: case 0x19: s.ctx[address - 0x18].xyoffset = value; break;
+        case 0x45: // DTHE (not drawn): the port's mark of the view whose draws follow (shino_port.cpp)
+            g_view = static_cast<ViewKind>((value >> 8) & 0xFFu);
+            if (g_view == ViewKind::MainWide)
+                g_frameWide = true;
+            break;
         case 0x1A: s.prmodecont = value; break;
         case 0x1B: s.prmode = value; break;
         case 0x1C: s.texclut = value; break;
@@ -1495,15 +1529,17 @@ namespace shino::gs
     void flip(Runtime *rt, R5900Context *ctx, uint64_t dispfb, uint64_t display)
     {
         ++g_flips;
-        // Widescreen: this frame shown 16:9 when it was drawn so; the next drawn so when it is wanted and this one drew
-        // 3D (the game's views: movies and the menus' pictures stay 4:3, their first frame after 3D too)
+        // Widescreen: this frame shown 16:9 when its main view was drawn so (by the game, widened) and drew 3D; movies
+        // and the menus' pictures stay 4:3
         {
-            static const bool fromEnvironment = std::getenv("SHINO_WIDESCREEN") && *std::getenv("SHINO_WIDESCREEN") == '1';
-            const bool wanted = fromEnvironment || (widescreenWanted && widescreenWanted());
+            if (static const bool trace = std::getenv("SHINO_TRACE_WIDE") != nullptr; trace && g_flips % 50 == 0)
+                std::printf("[shino:wide] flip %llu main view widened %d drew %d\n", static_cast<unsigned long long>(g_flips),
+                            g_frameWide, g_frameHad3D);
+            g_lastWide = g_frameWide && g_frameHad3D;
             if (widescreenShown)
-                widescreenShown(g_wide != 1.0f);
-            g_wide = wanted && g_frameHad3D ? 0.75f : 1.0f;
-            g_frameHad3D = false;
+                widescreenShown(g_lastWide);
+            g_frameWide = g_frameHad3D = false;
+            g_view = ViewKind::Unmarked;
         }
         auto &renderer = bozo::render::Renderer::instance();
         const uint32_t fbp = dispfb & 0x1FFu;

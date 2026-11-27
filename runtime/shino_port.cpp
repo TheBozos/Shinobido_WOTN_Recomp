@@ -5,6 +5,7 @@
 // `case 0x...u: // native site` line is listed as a "native 0xADDR" external: the instruction is replaced by the
 // handler, inline. docs/RECOMP_NOTES.md says why each one is there.
 #include "shino_cheats.h"
+#include "shino_gs.h"
 #include "shino_port.h"
 #include "bozo/ee/dispatcher.h"
 #include "bozo/ee/kernel.h"
@@ -115,6 +116,16 @@ namespace shino
             return true;
         }
 
+        // The main camera: the first the scene made (gp-0x6d44, 0x10ab78), the one the player looks through; whether
+        // its view was widened last (the widescreen's 4/3).
+        uint32_t mainCamera(const uint8_t *rdram)
+        {
+            uint32_t camera;
+            std::memcpy(&camera, rdram + 0x625a2cu, 4);
+            return camera;
+        }
+        bool g_mainWidened = false;
+
         bool nativeInstruction(uint8_t *rdram, R5900Context *ctx, Runtime *rt, uint32_t pc)
         {
             switch (pc)
@@ -129,6 +140,35 @@ namespace shino
                 return gravityStep(rdram, ctx, 1, 0.2f);
             case 0x003a2640u: // native site: swc1 f0,0x314(s0): the other characters' gravity (0x3a25a0, its law 0x10d970)
                 return gravityStep(rdram, ctx, 0, 1.0f, 16);
+            // Widescreen at the game's own source (docs/NATIVE_3D.md): the main camera's view 4/3 as wide, so the game
+            // projects and culls for 16:9 itself; each view's GS set-up marked so the GS translator knows whose draws
+            // follow (the radar's own camera is anchored as the HUD is).
+            case 0x0010b1f0u: // native site: mul.s f0,f1,f0: a camera's (a0) horizontal tangent, its vertical x the aspect 4/3
+            {
+                const uint32_t camera = ctx->r[4].uw[0];
+                const bool widened = camera == mainCamera(rdram) && gs::widescreenOn();
+                if (camera == mainCamera(rdram))
+                    g_mainWidened = widened;
+                if (static const bool trace = std::getenv("SHINO_TRACE_FOV") != nullptr; trace)
+                    std::printf("[shino:fov] frame %llu camera %08x (main %08x) tan %g x aspect %g%s\n",
+                                static_cast<unsigned long long>(bozo::port::vblankCount(rt)), camera, mainCamera(rdram), ctx->f[1],
+                                ctx->f[0], widened ? " x 4/3" : "");
+                ctx->f[0] = ctx->f[1] * ctx->f[0] * (widened ? 4.0f / 3.0f : 1.0f);
+                return true;
+            }
+            case 0x0044735cu: // native site: pcpyld a1,v0,a0: a view's (s2) DTHE (a0) and its address (v0), its kind in bits 8-15
+            {
+                const uint32_t view = ctx->r[18].uw[0], camera = mainCamera(rdram);
+                uint32_t mainView = 0;
+                if (camera)
+                    std::memcpy(&mainView, rdram + ((camera + 0xf4u) & 0x1FFFFFFu), 4);
+                const gs::ViewKind kind = view == mainView ? (g_mainWidened ? gs::ViewKind::MainWide : gs::ViewKind::Main)
+                                                           : gs::ViewKind::Other;
+                const uint64_t dthe = ctx->r[4].ud[0], address = ctx->r[2].ud[0];
+                ctx->r[5].ud[0] = dthe | (uint64_t(kind) << 8);
+                ctx->r[5].ud[1] = address;
+                return true;
+            }
             // 0x444e40, the render scheduler's set-up: VIF0 / VIF1 error masks (ERR.ME0, mask the interrupts of
             // VIF codes' I bits). No VIF: reads give 0, writes nothing.
             case 0x00444f38u: // native site: lw a0,0x3820(at): VIF0_ERR

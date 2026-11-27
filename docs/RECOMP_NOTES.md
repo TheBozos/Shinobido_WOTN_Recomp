@@ -776,7 +776,7 @@ view stretched to 16:9): more of the scene at both sides, centred, the buildings
 setting: the HUD (2D programs, stretched with the picture: to be squeezed back where the translator draws them), the
 compass needle (drawn with the 3D camera: it leaves its 2D ring), floor pieces missing at the bottom corners (the
 game's culling at the 4:3 frustum: its planes or VU0 box tests to widen), and the picture shown at 16:9
-(`setPictureAspect`).
+(`setPictureAspect`). All done since: the camera's own tangent widened (docs/NATIVE_3D.md, "Widescreen").
 
 ## Next
 
