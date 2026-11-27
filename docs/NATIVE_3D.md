@@ -143,6 +143,24 @@ It touches degenerate triangles and a batch's last two; which side is right need
 `SHINO_NATIVE_3D=skip` leaves the variant out (its first pass's memory results written back): the registers it would
 leave are then missing, so lit passes come out wrong; it is there for finding what later programs read.
 
+## Stage 1b: the characters (2026-11-27)
+
+The characters' renderer (set `0x579a00`, image 67, 30% of the 3D) is the same template: the same setup code (the
+camera rows, the flags' choice of variant, the batch's prelude at pair 51 and its lighting), its own output buffers
+(430 and 565), and a skinning pass: the batch comes in at five quadwords a vertex (position, UV, colour, normal and a
+fifth, the bones' weights) and its variant reads four (position, UV, colour) at `vi1`. Its main variant (pair 644,
+flags `0x9`: 78,191 of 81,999 runs of `MSCAL 0x3c38`) has no clipping and no first pass written back: each vertex's
+clip position by the camera rows (w scaled by kz = 1014.z, Q = kz / that), the same screen mapping and fog as the main
+renderer, and a facing test in screen space: P = the clip position times Q, the z of `A.x B.y - B.x A.y` with, on odd
+vertices, A = P(k) - P(k-1) and B = P(k-2) - P(k-1), on even ones A = P(k-1) - P(k-2) and B = P(k-1) - P(k), ADC
+where its sign differs from the cull mode (1023.z), carried by 2048.5 added to the fog word.
+
+`runtime/shino_native3d.cpp` takes it over the same way (a table of kinds: the microcode, the variant's entry, the next
+batches' program, what the variant does with a strip). Verify reads its packets too: on the frame-5200 play 2.57M
+packet vertices and on the final fight 9.67M, 99.9% identical in every field (the rest the strip restarts' pipeline
+effect); frame-exact captures with both renderers native differ at about 1.2% of the pixels (edges); a mission day
+(12.6M batches) without a fault.
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter

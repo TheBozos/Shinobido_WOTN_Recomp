@@ -26,9 +26,19 @@ namespace shino::native3d
 {
     namespace
     {
-        constexpr uint32_t kMainPacket = 0x539c30u; // the main renderer's microcode (its MPG packet in the executable)
-        constexpr uint32_t kVariant = 1023u;        // the main variant's entry pair
-        constexpr uint32_t kVertexProgram = 0x72du; // MSCAL 0x3968: the next batches' entry
+        // The variants drawn natively: the renderer's microcode (its MPG packet in the executable), the variant's entry
+        // pair, the next batches' program (MSCAL), and what the variant does with a strip.
+        struct Kind
+        {
+            uint32_t packet, variant, program;
+            bool clipper; // the main renderer's: ADC by the clip-space determinant, the clipper, the first pass written back
+        };
+        constexpr Kind kKinds[] = {
+            {0x539c30u, 1023u, 0x72du, true},   // the main renderer (MSCAL 0x3968), flags 0xa / 0xb
+            {0x579a00u, 644u, 0x787u, false},   // the characters' (MSCAL 0x3c38), flags 0x9: no clipping, screen-space culling
+        };
+        constexpr uint32_t kKindCount = sizeof(kKinds) / sizeof(kKinds[0]);
+        uint32_t g_kind = 0; // the kind takeOverAt found last
 
         struct Stats
         {
@@ -56,7 +66,7 @@ namespace shino::native3d
         struct OutStats
         {
             uint64_t batches = 0, differs = 0, vertices = 0;
-            std::array<uint64_t, 6> byField{}; // ST, Q, RGBA, XY, Z, fog and ADC
+            std::array<uint64_t, 7> byField{}; // ST, Q, RGBA, XY, Z, fog, ADC
         } g_out;
         uint32_t bitsOf(float f)
         {
@@ -70,15 +80,12 @@ namespace shino::native3d
             return std::isnan(g) ? 0 : g >= 2147483520.0f ? INT32_MAX : g <= -2147483648.0f ? INT32_MIN : static_cast<int32_t>(g);
         }
 
-        const vu::Image *mainImage()
+        const vu::Image *imageOf(uint32_t packet)
         {
-            static const vu::Image *image = [] {
-                for (uint32_t id = 0; id < vu::kImageCount; ++id)
-                    if (vu::kImages[id].source == kMainPacket)
-                        return &vu::kImages[id];
-                return static_cast<const vu::Image *>(nullptr);
-            }();
-            return image;
+            for (uint32_t id = 0; id < vu::kImageCount; ++id)
+                if (vu::kImages[id].source == packet)
+                    return &vu::kImages[id];
+            return nullptr;
         }
 
         float lane(const vu::Unit &v, uint32_t qw, int i) { return reinterpret_cast<const float *>(v.data + 16u * (qw & v.qwMask))[i]; }
@@ -98,23 +105,41 @@ namespace shino::native3d
 
     uint32_t takeOverAt(const vu::Unit &v)
     {
-        const vu::Image *im = mainImage();
-        if (!im || v.vu0)
+        static const std::array<const vu::Image *, kKindCount> images = [] {
+            std::array<const vu::Image *, kKindCount> a{};
+            for (uint32_t i = 0; i < kKindCount; ++i)
+                a[i] = imageOf(kKinds[i].packet);
+            return a;
+        }();
+        if (v.vu0)
             return 0;
-        for (const uint32_t p : {0u, kVariant, kVertexProgram})
+        for (uint32_t i = 0; i < kKindCount; ++i)
         {
-            if (p < im->start || p >= im->start + im->count)
-                return 0;
-            const uint32_t k = p - im->start;
-            if (v.micro[2 * p] != im->code[2 * k] || v.micro[2 * p + 1] != im->code[2 * k + 1])
-                return 0;
+            const vu::Image *im = images[i];
+            bool loaded = im != nullptr;
+            for (const uint32_t p : {0u, kKinds[i].variant, kKinds[i].program})
+            {
+                if (!loaded || p < im->start || p >= im->start + im->count)
+                {
+                    loaded = false;
+                    break;
+                }
+                const uint32_t k = p - im->start;
+                loaded = v.micro[2 * p] == im->code[2 * k] && v.micro[2 * p + 1] == im->code[2 * k + 1];
+            }
+            if (loaded)
+            {
+                g_kind = i;
+                return kKinds[i].variant * 8u;
+            }
         }
-        return kVariant * 8u;
+        return 0;
     }
 
     void batch(vu::Unit &v, bool submit)
     {
         const uint32_t base = v.vi[1], count = v.vi[9];
+        const Kind &kind = kKinds[g_kind];
         ++g_stats.batches;
         g_stats.vertices += count;
         // The camera rows as the setup leaves them in vf28-vf31: x and y less half of w, times the screen scale (1015);
@@ -148,7 +173,7 @@ namespace shino::native3d
 
         // The first pass covers the vertices in pairs (to vi11 = vi1 + (4 count + 4 & 0x7ff8)): one past the batch's
         // own when the count is odd.
-        const uint32_t passed = std::max<uint32_t>(((4u * count + 4u) & 0x7FF8u) / 4u, 2u);
+        const uint32_t passed = kind.clipper ? std::max<uint32_t>(((4u * count + 4u) & 0x7FF8u) / 4u, 2u) : count;
         std::vector<std::array<float, 4>> clip(passed);
         std::vector<uint16_t> adc(passed, 0);
         std::vector<bozo::render::Vertex> corner(count);
@@ -199,7 +224,46 @@ namespace shino::native3d
             return (pz + px) + py;
         };
         std::array<float, 3> last{};
-        for (uint32_t k = 2; k < passed; ++k)
+        if (!kind.clipper)
+        {
+            // The characters' variant: each triangle's facing from its corners on the screen as it makes them (P = the
+            // clip position times Q, Q = kz / (the rows' w scaled by kz)), the z of the edges' cross product as its
+            // OPMULA / OPMSUB leave it (A.x B.y - B.x A.y), the edges taken one way on alternate vertices and the other
+            // way between (the strip's winding); ADC where the sign differs from the cull mode (1023.z).
+            const uint32_t cull = word(v, 1023, 2) & 0xFFFFu;
+            const float kz = lane(v, 1014, 2);
+            std::vector<std::array<float, 2>> P(count);
+            for (uint32_t j = 0; j < count; ++j)
+            {
+                const uint32_t q = base + 4u * j;
+                const float px = lane(v, q, 0), py = lane(v, q, 1), pz = lane(v, q, 2);
+                float wk = row[3][3] * kz;
+                wk = wk + (row[0][3] * kz) * px;
+                wk = wk + (row[1][3] * kz) * py;
+                wk = wk + (row[2][3] * kz) * pz;
+                const float Qk = kz / wk;
+                P[j] = {clip[j][0] * Qk, clip[j][1] * Qk};
+            }
+            for (uint32_t k = 2; k < count; ++k)
+            {
+                std::array<float, 2> A, B;
+                if ((k & 1u) != 0) // the odd vertices: A from this one back, B from the one before two back
+                {
+                    A = {P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]};
+                    B = {P[k - 2][0] - P[k - 1][0], P[k - 2][1] - P[k - 1][1]};
+                }
+                else
+                {
+                    A = {P[k - 1][0] - P[k - 2][0], P[k - 1][1] - P[k - 2][1]};
+                    B = {P[k - 1][0] - P[k][0], P[k - 1][1] - P[k][1]};
+                }
+                const float ab = A[0] * B[1], ba = B[0] * A[1];
+                const float z = ab - ba;
+                const uint32_t sign = std::signbit(z) ? 32u : 0u;
+                adc[k] = sign != cull ? 0x8000u : 0u;
+            }
+        }
+        for (uint32_t k = 2; kind.clipper && k < passed; ++k)
         {
             float d;
             if ((k & 1u) == 0)
@@ -219,7 +283,7 @@ namespace shino::native3d
         // the GPU clips them (a triangle reaching behind the camera too: the renderer's w).
         const float guardX = lane(v, 1021, 1), guardY = lane(v, 1022, 1), depth0 = lane(v, 1021, 2), depth1 = lane(v, 1022, 2);
         std::vector<uint8_t> outside(count);
-        for (uint32_t k = 0; k < count; ++k)
+        for (uint32_t k = 0; kind.clipper && k < count; ++k)
         {
             const float x = clip[k][0] * guardX, y = clip[k][1] * guardY, w = clip[k][3], aw = std::fabs(w);
             const float z = depth0 + depth1 * w;
@@ -313,7 +377,7 @@ namespace shino::native3d
         g_stats.triangles += triangles.size() / 3;
         // The buffer as the variant's first pass leaves it: each vertex's clip position (x, y, w, w) in slot 0, its ADC
         // in slot 1's w. Programs after it read them: the light passes over the same vertices.
-        if (mode() == Mode::Skip) // (otherwise the VU's own variant writes them)
+        if (mode() == Mode::Skip && kind.clipper) // (otherwise the VU's own variant writes them)
             for (uint32_t k = 0; k < passed; ++k)
             {
                 const uint32_t q = base + 4u * k;
@@ -342,6 +406,28 @@ namespace shino::native3d
                 f = std::min(std::max(f, 0.0f), 255.0f);
                 o.f = static_cast<uint32_t>(ftoi(f, 16.0f) >> 4) & 0xFFu;
                 o.adc = adc[k] ? 1u : 0u;
+                if (!kind.clipper)
+                {
+                    // The characters' variant: w by rows scaled by kz (1014.z), Q = kz / that; the fog word
+                    // min(max(w, a), b) - a, a = 1014.w kz, b = 255 + a; with ADC 2048.5 more (bit 15 of ftoi4).
+                    const float kz = lane(v, 1014, 2), a = lane(v, 1014, 3) * kz, b = 255.0f + lane(v, 1014, 3) * kz;
+                    const float px = lane(v, q, 0), py = lane(v, q, 1), pz = lane(v, q, 2);
+                    float wk = row[3][3] * kz;
+                    wk = wk + (row[0][3] * kz) * px;
+                    wk = wk + (row[1][3] * kz) * py;
+                    wk = wk + (row[2][3] * kz) * pz;
+                    const float Qk = kz / wk;
+                    o.s = bitsOf(lane(v, q + 1, 0) * Qk);
+                    o.t = bitsOf(lane(v, q + 1, 1) * Qk);
+                    o.q = bitsOf(1.0f * Qk);
+                    o.x = static_cast<uint32_t>(ftoi(clip[k][0] * Qk - (0.0f - cx), 16.0f)) & 0xFFFFu;
+                    o.y = static_cast<uint32_t>(ftoi(clip[k][1] * Qk - (0.0f - cy), 16.0f)) & 0xFFFFu;
+                    o.z = static_cast<uint32_t>(ftoi(sz * Qk - (0.0f - cz), 16.0f) >> 4) & 0xFFFFFFu;
+                    const float fw = std::min(std::max(wk, a), b);
+                    const uint32_t word3 = static_cast<uint32_t>(ftoi(adc[k] ? fw - (a - 2048.5f) : fw - a, 16.0f));
+                    o.f = (word3 >> 4) & 0xFFu;
+                    o.adc = (word3 >> 15) & 1u;
+                }
             }
             g_kicked.clear();
             g_capturing = true;
@@ -371,10 +457,10 @@ namespace shino::native3d
             {
                 const Out &a = g_last.out[k], &b = g_kicked[k];
                 ++g_out.vertices;
-                const bool d[6] = {a.s != b.s || a.t != b.t, a.q != b.q, a.rgba != b.rgba, a.x != b.x || a.y != b.y, a.z != b.z,
-                                   a.f != b.f || (k >= 2 && a.adc != b.adc)}; // (ADC: the strip's first two vertices draw nothing)
+                const bool d[7] = {a.s != b.s || a.t != b.t, a.q != b.q, a.rgba != b.rgba, a.x != b.x || a.y != b.y, a.z != b.z,
+                                   a.f != b.f, k >= 2 && a.adc != b.adc}; // (ADC: the strip's first two vertices draw nothing)
                 bool any = false;
-                for (int i = 0; i < 6; ++i)
+                for (int i = 0; i < 7; ++i)
                     if (d[i])
                     {
                         ++g_out.byField[i];
@@ -387,6 +473,11 @@ namespace shino::native3d
             }
         }
         const Last &l = g_last;
+        if (!kKinds[g_kind].clipper)
+        {
+            ++g_stats.compared;
+            return;
+        }
         // The variant's first pass covers the vertices in pairs: what it wrote for the batch's own.
         for (uint32_t k = 0; k < l.clip.size(); ++k)
         {
@@ -472,10 +563,10 @@ namespace shino::native3d
         {
             std::printf("; compared %llu: ADC differed %llu, positions %llu (largest relative error %.3g)", (unsigned long long)s.compared,
                         (unsigned long long)s.flagDiffers, (unsigned long long)s.positionDiffers, s.positionError);
-            std::printf("; fast-path packets %llu, %llu vertices: ST %llu, Q %llu, RGBA %llu, XY %llu, Z %llu, fog/ADC %llu differ",
+            std::printf("; fast-path packets %llu, %llu vertices: ST %llu, Q %llu, RGBA %llu, XY %llu, Z %llu, fog %llu, ADC %llu differ",
                         (unsigned long long)g_out.batches, (unsigned long long)g_out.vertices, (unsigned long long)g_out.byField[0],
                         (unsigned long long)g_out.byField[1], (unsigned long long)g_out.byField[2], (unsigned long long)g_out.byField[3],
-                        (unsigned long long)g_out.byField[4], (unsigned long long)g_out.byField[5]);
+                        (unsigned long long)g_out.byField[4], (unsigned long long)g_out.byField[5], (unsigned long long)g_out.byField[6]);
         }
         std::printf("%c", 10);
     }
