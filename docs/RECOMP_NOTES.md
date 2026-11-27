@@ -751,6 +751,32 @@ dump per scroll step), two-line titles, story titles first; the rival ninja's "I
 (in play it opens "Abandon the mission?", and abandoning the final mission is a Game Over: the first try went to the
 title screen and a new game).
 
+## The 3D's resolution and widescreen, mapped (2026-11-27)
+
+**Resolution.** The GS translator's triangles are drawn by the GPU into a target of the window's picture size times
+BozoEngine's render scale (`present_gl.cpp`): the 3D is already at the window's resolution, not the console's 512 or
+640 wide. A render scale of 0.25 makes it blocky, 3 smooths its edges (checked with a temporary switch). The port does
+not use the engine's video settings (`WindowOptions::videoSettings` off): no `video.ini`, no Video tab, no render
+scale, anti-aliasing, texture upscale or smoothing, window modes. Turning them on is the way to a sharper 3D, not a
+native renderer.
+
+**The camera.** Every 3D renderer (five functions at `0x474e70`, `0x479f10`, `0x47b1f0`, `0x491ca0`, `0x4931d0`) uploads
+the same block with `UNPACK V4-32`, 10 quadwords to VU1 address 1008 (`0x6c0a03f0`), from double-buffered packets
+(`0xdb6e00`, `0xe36200` in play): 1008-1011 the view-projection matrix (lane 0 of each row the x output, lane 3 the w),
+1014 lighting constants, 1015 the screen scale (512, 512, 65548), 1016 a depth offset, 1017 the GS centre (2048, 2048).
+The setup program at pair 0 maps x through `x - 0.5 w` (its `loi 0.5`), then the scale and the centre: the screen's
+middle is x = 0.5 w. libvu0's `sceVu0ViewScreenMatrix` (`0x2c5058`) and `sceVu0CameraMatrix` are linked but not
+called; the renderers read the current camera through `0x672df0` (cleared by the frame's end).
+
+**Widescreen, tried.** Each row's x output squeezed about the middle, `x' = (x - 0.5 w) * 0.75 + 0.5 w`, at that
+UNPACK (a temporary switch), the picture then shown 4:3 wider
+([docs/screenshots/2026-11-27-widescreen-test.png](screenshots/2026-11-27-widescreen-test.png): 4:3, then the wider
+view stretched to 16:9): more of the scene at both sides, centred, the buildings there drawn. Left to do for a
+setting: the HUD (2D programs, stretched with the picture: to be squeezed back where the translator draws them), the
+compass needle (drawn with the 3D camera: it leaves its 2D ring), floor pieces missing at the bottom corners (the
+game's culling at the 4:3 frustum: its planes or VU0 box tests to widen), and the picture shown at 16:9
+(`setPictureAspect`).
+
 ## Next
 
 - Speed: the castle's load takes about 15.5 ms of CPU a frame (40 ms at 25 frames a second). The compiled VU1 code is
