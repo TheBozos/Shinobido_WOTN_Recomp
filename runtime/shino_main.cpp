@@ -108,7 +108,11 @@ namespace
 int main(int argc, char **argv)
 {
     bozo::host::FreeOptions options;
-    options.framePeriodCycles = 294912000 / 50; // PAL (VMODE = PAL in SYSTEM.CNF)
+    // SHINO_60FPS=1 (experimental): fields at NTSC's rate and a frame every field; the game's frame timer told so
+    // (shino_render.cpp, frameTimer60).
+    const bool fps60 = std::getenv("SHINO_60FPS") && *std::getenv("SHINO_60FPS") == '1';
+    const uint32_t fieldsPerSecond = fps60 ? 60u : 50u;
+    options.framePeriodCycles = 294912000 / fieldsPerSecond; // PAL (VMODE = PAL in SYSTEM.CNF)
     bool window = false;
     bool mute = false; // --mute: no sound through the speakers (hidden runs, tests, captures)
 #ifdef SHINO_WITH_WINDOW
@@ -208,7 +212,7 @@ int main(int argc, char **argv)
     host.libraries().mpegOptions = {.referenceLayout = false, .paced = false, .sdkNodata = false, .picturesAhead = 32, .sdkDemux = true};
     // A PAL disc (SYSTEM.CNF: VMODE = PAL): the game's graphics init asks for the console's own video mode (0), which
     // is PAL's 50 fields a second here; the movie player asks for PAL explicitly.
-    host.libraries().palConsole = true;
+    host.libraries().palConsole = !fps60;
     d.setFunctions(shino_function_table, shino_function_count, shino_resume_table, shino_resume_count);
     bozo::port::Registry registry;
     shino::install(d.runtime(), registry);
@@ -226,16 +230,21 @@ int main(int argc, char **argv)
     // frames a second ran it at twice its speed wherever the port kept up. PS2X_FRAME_CAP overrides.
     const bool capFromEnvironment = std::getenv("PS2X_FRAME_CAP") != nullptr;
     if (!capFromEnvironment)
-        pacer.setCap(25);
+        pacer.setCap(fps60 ? 60 : 25);
     uint64_t lastFrameCycles = 0;
     host.onFrame = [&](uint64_t f, const R5900Context *ctx)
     {
+        if (static bool rateSet = false; fps60 && !rateSet) // a save state keeps the field rate it was made with
+        {
+            d.kernel().fieldRate(60000, 1001);
+            rateSet = true;
+        }
         const uint64_t now = d.now();
         if (!capFromEnvironment && lastFrameCycles && now > lastFrameCycles)
         {
             const double fields = double(now - lastFrameCycles) / double(options.framePeriodCycles);
             const uint32_t spanned = static_cast<uint32_t>(std::clamp(fields + 0.5, 1.0, 10.0));
-            pacer.setCap(50u / spanned);
+            pacer.setCap(fieldsPerSecond / spanned);
         }
         lastFrameCycles = now;
         // SHINO_DUMP_RAM_AT=<frame>,<frame>...: the EE's RAM at each of those frames' end, as build/ram_<frame>.bin (the

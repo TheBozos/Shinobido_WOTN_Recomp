@@ -14,6 +14,7 @@
 #include "bozo/render/renderer.h"
 #include "bozo/render/texture.h"
 #include "bozo/runtime_api.h"
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -256,6 +257,19 @@ namespace shino
             vif::eeRam = rdram;
             const uint32_t caller = ctx->r[31].uw[0];
             ctx->r[2].ud[0] = 0;
+            // SHINO_FRAME_VBLANKS=<n>: the frame's minimum forced (the game sets 2 at boot, 0x1082ac): 1 flips every field.
+            // SHINO_60FPS=1: 1, and the game's frame timer (its struct at gp-0x6cec: +0 the vblanks a second, 50 from its
+            // constructor 0x133df0, +4 a vblank's seconds) told that a vblank is 1/60 s.
+            static const bool fps60 = std::getenv("SHINO_60FPS") && *std::getenv("SHINO_60FPS") == '1';
+            if (static const int forced = fps60 ? 1 : std::getenv("SHINO_FRAME_VBLANKS") ? std::atoi(std::getenv("SHINO_FRAME_VBLANKS")) : 0;
+                forced > 0 && forced < 0xFF)
+                wr8(kVblanksPerFrame, static_cast<uint8_t>(forced));
+            if (fps60)
+                if (const uint32_t timer = rd32(kGp - 0x6CECu); timer >= 0x100000u && timer < 0x1FFFF00u && rd32(timer) == 0x42480000u)
+                {
+                    wr32(timer, 0x42700000u); // 60.0
+                    wr32(timer + 4, std::bit_cast<uint32_t>(1.0f / 60.0f));
+                }
             const uint8_t count = rd8(kVblanks), minimum = rd8(kVblanksPerFrame);
             if (static const char *t = std::getenv("SHINO_TRACE_VBLANK"); t && gs::flips() >= std::strtoull(t, nullptr, 10) &&
                                                                           gs::flips() < std::strtoull(t, nullptr, 10) + 4)
