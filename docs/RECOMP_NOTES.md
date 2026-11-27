@@ -774,3 +774,20 @@ at 25 frames a second; a host frame (one flip) spans two fields of the game's ti
 hold the game to 50 frames a second, which ran it at twice its speed wherever the port kept up (the boot, the menus).
 It now holds each frame to the fields it spanned (`runtime/shino_main.cpp`, the cap 50 / fields: 25 in this game);
 `PS2X_FRAME_CAP` overrides it.
+
+### 50 and 60 frames a second (2026-11-27)
+
+The game's logic follows its own frame timer, not the frame count: its struct (pointer at `gp-0x6cec`, 0x1079df0 in
+play) holds +0 the vblanks a second (50.0, hard-coded by its constructor `0x133df0`), +4 a vblank's seconds (1/+0),
++8 the frame's step in seconds, +0xc the frames a second, +0x1c the vblank clock (`gp-0x6ce8`, a second vblank
+handler `0x133dd0` adds 1 a field), +0x20-0x3c the last 8 frames' vblanks and +0x44 the largest step (0.06). Each
+frame `0x134010` averages the 8 and multiplies by +4. Measured:
+- `SHINO_FRAME_VBLANKS=1` (the frame's minimum forced to 1: a flip every field, 50 a second): the ninja's walk
+  1.35 units a frame becomes 0.67, the same distance in the same time; the game keeps up within the field.
+- `SHINO_60FPS=1` (experimental): fields at NTSC's rate (`palConsole` off; a save state's rate set again), a flip every
+  field, the timer's +0 / +4 written as 60 and 1/60 when its constructor has set 50, frames held to 60 a second.
+  The walk 0.563 a frame (1.348 x 25/60 expected); after 10 s of game time the ten guards of the frame-5200 state
+  within 5 units of where they are at 25 (patrols, AI on the timer); 60.0 frames a second in the window in play.
+To check before it is a setting: what may count frames (menus, the HUD, effects, the in-engine cutscenes), the other
+hard-coded 0.02s (`0x174910`, ...), the movies (PAL mode 3: 50 Hz while they play), the sound, and the busiest scenes
+(the fight's day: 54 to 60 in the window).
