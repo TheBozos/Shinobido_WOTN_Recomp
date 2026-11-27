@@ -37,4 +37,8 @@ namespace shino::native3d
     // (slot 1's w) against the native batch's.
     void compare(const vu::Unit &v);
     void report();
+    // Verify: while the VU runs a compared batch's variant, its XGKICKs' GIF packets are read here (each vertex's ST,
+    // RGBAQ and XYZF2) to compare with the native batch's (compare()).
+    bool capturing();
+    void captureKick(const uint8_t *vuMemory, uint32_t address);
 }

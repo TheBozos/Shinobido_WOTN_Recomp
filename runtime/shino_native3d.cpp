@@ -37,13 +37,38 @@ namespace shino::native3d
             double positionError = 0.0;
         } g_stats;
 
-        // Verify: the last batch made natively (clip positions as the variant stores them, the ADC flags).
+        // A GS vertex as a variant's packet holds it (PACKED ST, RGBAQ, XYZF2).
+        struct Out
+        {
+            uint32_t s = 0, t = 0, q = 0, rgba = 0, x = 0, y = 0, z = 0, f = 0, adc = 0;
+        };
+        // Verify: the last batch made natively (clip positions as the variant stores them, the ADC flags, the GS vertices
+        // its fast path would send) and the GS vertices the VU's variant sent.
         struct Last
         {
             uint32_t base = 0, count = 0;
             std::vector<std::array<float, 4>> clip;
             std::vector<uint16_t> adc;
+            std::vector<Out> out;
         } g_last;
+        std::vector<Out> g_kicked;
+        bool g_capturing = false, g_fastPath = false;
+        struct OutStats
+        {
+            uint64_t batches = 0, differs = 0, vertices = 0;
+            std::array<uint64_t, 6> byField{}; // ST, Q, RGBA, XY, Z, fog and ADC
+        } g_out;
+        uint32_t bitsOf(float f)
+        {
+            uint32_t u;
+            std::memcpy(&u, &f, 4);
+            return u;
+        }
+        int32_t ftoi(float f, float scale)
+        {
+            const float g = f * scale;
+            return std::isnan(g) ? 0 : g >= 2147483520.0f ? INT32_MAX : g <= -2147483648.0f ? INT32_MIN : static_cast<int32_t>(g);
+        }
 
         const vu::Image *mainImage()
         {
@@ -298,6 +323,31 @@ namespace shino::native3d
             }
         if (mode() == Mode::Verify)
         {
+            // The fast path's GS vertices (the variant's output loop): STQ = (s, t, 1) Q, Q = 1 / w; RGBA by ftoi0;
+            // XYZ = ftoi4 of 1016 + 1017 + the row sums times Q; F = ftoi4 of the fog, ADC.
+            g_last.out.assign(count, {});
+            for (uint32_t k = 0; k < count; ++k)
+            {
+                const uint32_t q = base + 4u * k;
+                const float w = clip[k][3], Q = 1.0f / w;
+                Out &o = g_last.out[k];
+                o.s = bitsOf(lane(v, q + 1, 0) * Q);
+                o.t = bitsOf(lane(v, q + 1, 1) * Q);
+                o.q = bitsOf(1.0f * Q);
+                o.rgba = corner[k].rgba;
+                o.x = static_cast<uint32_t>(ftoi(cx + clip[k][0] * Q, 16.0f)) & 0xFFFFu;
+                o.y = static_cast<uint32_t>(ftoi(cy + clip[k][1] * Q, 16.0f)) & 0xFFFFu;
+                o.z = static_cast<uint32_t>(ftoi(cz + sz * Q, 16.0f) >> 4) & 0xFFFFFFu;
+                float f = fogScale * (w - fogFar);
+                f = std::min(std::max(f, 0.0f), 255.0f);
+                o.f = static_cast<uint32_t>(ftoi(f, 16.0f) >> 4) & 0xFFu;
+                o.adc = adc[k] ? 1u : 0u;
+            }
+            g_kicked.clear();
+            g_capturing = true;
+            g_fastPath = true; // no vertex outside a clip plane: the variant's output loop, not its clipper
+            for (uint32_t k = 0; k < passed && k < outside.size(); ++k)
+                g_fastPath &= outside[k] == 0;
             g_last.base = base;
             g_last.count = count;
             g_last.clip = std::move(clip);
@@ -313,6 +363,29 @@ namespace shino::native3d
 
     void compare(const vu::Unit &v)
     {
+        g_capturing = false;
+        if (g_fastPath && g_kicked.size() == g_last.out.size() && !g_kicked.empty()) // the fast path: a GS vertex a batch vertex
+        {
+            ++g_out.batches;
+            for (size_t k = 0; k < g_kicked.size(); ++k)
+            {
+                const Out &a = g_last.out[k], &b = g_kicked[k];
+                ++g_out.vertices;
+                const bool d[6] = {a.s != b.s || a.t != b.t, a.q != b.q, a.rgba != b.rgba, a.x != b.x || a.y != b.y, a.z != b.z,
+                                   a.f != b.f || (k >= 2 && a.adc != b.adc)}; // (ADC: the strip's first two vertices draw nothing)
+                bool any = false;
+                for (int i = 0; i < 6; ++i)
+                    if (d[i])
+                    {
+                        ++g_out.byField[i];
+                        any = true;
+                    }
+                if (any && g_out.differs++ < 12)
+                    std::printf("[shino:native3d] packet vertex %zu: native st %08x %08x q %08x rgba %08x xy %x %x z %x f %x adc %u; the VU's "
+                                "st %08x %08x q %08x rgba %08x xy %x %x z %x f %x adc %u%c", k, a.s, a.t, a.q, a.rgba, a.x, a.y, a.z, a.f, a.adc,
+                                b.s, b.t, b.q, b.rgba, b.x, b.y, b.z, b.f, b.adc, 10);
+            }
+        }
         const Last &l = g_last;
         // The variant's first pass covers the vertices in pairs: what it wrote for the batch's own.
         for (uint32_t k = 0; k < l.clip.size(); ++k)
@@ -335,6 +408,58 @@ namespace shino::native3d
         ++g_stats.compared;
     }
 
+    bool capturing() { return g_capturing; }
+
+    void captureKick(const uint8_t *mem, uint32_t address)
+    {
+        for (int packets = 0; packets < 64; ++packets)
+        {
+            const uint8_t *tag = mem + 16 * (address & 0x3FFu);
+            uint64_t lo, regs;
+            std::memcpy(&lo, tag, 8);
+            std::memcpy(&regs, tag + 8, 8);
+            const uint32_t loops = lo & 0x7FFFu, flg = (lo >> 58) & 3u, nreg = (lo >> 60) ? uint32_t(lo >> 60) : 16u;
+            const uint32_t qwords = flg == 0 ? loops * nreg : flg == 1 ? (loops * nreg + 1) / 2 : loops;
+            if (flg == 0)
+                for (uint32_t i = 0; i < loops; ++i)
+                {
+                    Out o;
+                    bool vertex = false;
+                    for (uint32_t r = 0; r < nreg; ++r)
+                    {
+                        uint32_t w[4];
+                        std::memcpy(w, mem + 16 * ((address + 1 + i * nreg + r) & 0x3FFu), 16);
+                        switch ((regs >> (4 * r)) & 15u)
+                        {
+                        case 0x2: // ST (Q in the third word)
+                            o.s = w[0];
+                            o.t = w[1];
+                            o.q = w[2];
+                            break;
+                        case 0x1: // RGBAQ
+                            o.rgba = (w[0] & 0xFFu) | (w[1] & 0xFFu) << 8 | (w[2] & 0xFFu) << 16 | (w[3] & 0xFFu) << 24;
+                            break;
+                        case 0x4: // XYZF2
+                            o.x = w[0] & 0xFFFFu;
+                            o.y = w[1] & 0xFFFFu;
+                            o.z = (w[2] >> 4) & 0xFFFFFFu;
+                            o.f = (w[3] >> 4) & 0xFFu;
+                            o.adc = (w[3] >> 15) & 1u;
+                            vertex = true;
+                            break;
+                        default:
+                            break;
+                        }
+                    }
+                    if (vertex)
+                        g_kicked.push_back(o);
+                }
+            address += qwords + 1;
+            if ((lo >> 15) & 1u)
+                break;
+        }
+    }
+
     void report()
     {
         if (mode() == Mode::Off)
@@ -344,8 +469,14 @@ namespace shino::native3d
                     (unsigned long long)s.batches, (unsigned long long)s.vertices, (unsigned long long)s.triangles, (unsigned long long)s.culled,
                     (unsigned long long)s.rejected, (unsigned long long)s.clipped);
         if (mode() == Mode::Verify)
+        {
             std::printf("; compared %llu: ADC differed %llu, positions %llu (largest relative error %.3g)", (unsigned long long)s.compared,
                         (unsigned long long)s.flagDiffers, (unsigned long long)s.positionDiffers, s.positionError);
+            std::printf("; fast-path packets %llu, %llu vertices: ST %llu, Q %llu, RGBA %llu, XY %llu, Z %llu, fog/ADC %llu differ",
+                        (unsigned long long)g_out.batches, (unsigned long long)g_out.vertices, (unsigned long long)g_out.byField[0],
+                        (unsigned long long)g_out.byField[1], (unsigned long long)g_out.byField[2], (unsigned long long)g_out.byField[3],
+                        (unsigned long long)g_out.byField[4], (unsigned long long)g_out.byField[5]);
+        }
         std::printf("%c", 10);
     }
 }

@@ -999,9 +999,11 @@ namespace shino
             if (static const char *d = std::getenv("SHINO_DUMP_MICRO"); d && gs::flips() == static_cast<uint64_t>(std::atoll(d)))
             {
                 static int n = 0, seen = -1;
-                ++seen; // SHINO_DUMP_MICRO=<flip>[:<first>]: the flip's programs from the first-th (12 at most)
+                ++seen; // SHINO_DUMP_MICRO=<flip>[:<first>]: the flip's programs from the first-th (12 at most);
+                // SHINO_DUMP_MICRO_PC=<pc>: only the programs starting there
                 const char *colon = std::strchr(d, ':');
-                if (n < 12 && seen >= (colon ? std::atoi(colon + 1) : 0))
+                static const long onlyPc = std::getenv("SHINO_DUMP_MICRO_PC") ? std::strtol(std::getenv("SHINO_DUMP_MICRO_PC"), nullptr, 16) : -1;
+                if (n < 12 && seen >= (colon ? std::atoi(colon + 1) : 0) && (onlyPc < 0 || static_cast<long>(pcBytes) == onlyPc))
                 {
                     char name[64];
                     std::snprintf(name, sizeof(name), "build/vu1_micro_%02d.bin", n);
@@ -1285,6 +1287,8 @@ namespace shino
                     std::printf("  %03x: %08x %08x %08x %08x\n", (address + q) & 0x3FFu, m[0], m[1], m[2], m[3]);
                 }
             }
+            if (native3d::capturing())
+                native3d::captureKick(v.mem, address);
             if (!g_noKick)
                 gs::path1(v.mem, address);
         }

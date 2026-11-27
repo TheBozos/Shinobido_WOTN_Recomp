@@ -132,6 +132,14 @@ Checks:
 - A whole mission day (23,000 frames, 7.1M batches) natively, headless: no fault; the game's RAM at frame 5450 is the
   same as without (nothing the game computes depends on how it is drawn).
 
+Verify also reads the GS packets the variant's fast path sends (`captureKick`: each vertex's ST, RGBAQ, XYZF2) and
+compares them with the native batch's, field by field. On the frame-5200 play, 98.75% of 694,461 vertices agree;
+the others are at strip restarts: where the batch repeats a vertex twice, the VU's packet has it three times, one of
+them mixing vertex 4's position with a later vertex's ST and Q, and the batch's last vertices shifted out. The
+first pass over the same buffer matched exactly, so this comes from the output loop's software pipeline (loads,
+DIV's 7-cycle Q and stores overlapped across vertices): either the port's VU timing or the console itself does it.
+It touches degenerate triangles and a batch's last two; which side is right needs a reference from a console.
+
 `SHINO_NATIVE_3D=skip` leaves the variant out (its first pass's memory results written back): the registers it would
 leave are then missing, so lit passes come out wrong; it is there for finding what later programs read.
 
