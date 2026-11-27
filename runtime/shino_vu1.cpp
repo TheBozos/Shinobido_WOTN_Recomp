@@ -1318,6 +1318,49 @@ namespace shino
         g_cv = in;
     }
 
+    namespace
+    {
+        // VU0's programs (about 10,000 a frame, of about 7 pairs) run compiled without runProgram's VU1 bookkeeping: the
+        // image last found at the pc, while its segment holds the same code; otherwise as runProgram does.
+        bool vu0Direct()
+        {
+            static const bool on = compiledOn() && !std::getenv("SHINO_VU0_INTERP") && !std::getenv("SHINO_VU_VERIFY");
+            return on;
+        }
+        void runVu0Compiled(uint32_t pcBytes)
+        {
+            Vu1 &v = *g_cur;
+            prof::Scope timed(prof::Vu0);
+            g_programStart = pcBytes;
+            ++v.programs;
+            v.vi[0] = 0;
+            selectUnit(v);
+            const uint32_t pc = pcBytes & v.pcMask, pair = pc >> 3;
+            const int last = g_lastImage0[pair];
+            if (last < 0 || !vu::segmentOk(static_cast<uint32_t>(last), pair / vu::kSegmentPairs))
+            {
+                compiledFrom(pc);
+                return;
+            }
+            uint32_t r = vu::kImages[last].run(v, pc);
+            if (r != vu::kEnd && (r & vu::kInterpret))
+            {
+                ++g_compiled.handed;
+                ++g_compiled.handedAt[r & v.pcMask];
+                r = interpret(r & v.pcMask, true);
+            }
+            if (r == vu::kEnd)
+                ++g_compiled.ended;
+            else
+                compiledFrom(r & v.pcMask);
+        }
+    }
+
+    // The registers copied one by one, not vectorized: the EE code and the compiled program write them one at a time
+    // (ctx->vi as words, the unit's vi as halfwords), and a 16-byte load of what narrower stores just wrote stalls.
+#if defined(__GNUC__) && !defined(__clang__)
+    __attribute__((optimize("no-tree-vectorize", "no-tree-slp-vectorize")))
+#endif
     void vu0::run(Runtime *rt, R5900Context *ctx, uint32_t pcBytes)
     {
         Vu1 &v = g_vu0;
@@ -1358,7 +1401,10 @@ namespace shino
             }
             std::printf("\n");
         }
-        runProgram(pcBytes);
+        if (!trace && vu0Direct())
+            runVu0Compiled(pcBytes);
+        else
+            runProgram(pcBytes);
         if (trace)
             for (int r = 1; r < 12; ++r)
                 std::printf("  vf%-2d %g %g %g %g\n", r, v.vf[r].f[0], v.vf[r].f[1], v.vf[r].f[2], v.vf[r].f[3]);
