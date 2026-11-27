@@ -951,10 +951,10 @@ namespace shino::native3d
     int objectsMode()
     {
         static const int m = [] {
-            const char *e = std::getenv("SHINO_NATIVE_OBJECTS");
-            if (!e || !*e || *e == '0' || mode() != Mode::On)
+            const char *e = std::getenv("SHINO_NATIVE_OBJECTS"); // (unset: on, with native 3D on)
+            if (mode() != Mode::On || (e && *e == '0'))
                 return 0;
-            return std::strcmp(e, "verify") == 0 ? 2 : 1;
+            return e && std::strcmp(e, "verify") == 0 ? 2 : 1;
         }();
         return m;
     }

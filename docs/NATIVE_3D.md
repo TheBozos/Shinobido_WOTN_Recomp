@@ -220,7 +220,8 @@ interpreter and `divideV` (`shino_vu.h`).
 
 ## Stage 2b: the main renderer's objects whole, no VU code (2026-11-27)
 
-`SHINO_NATIVE_OBJECTS=1` (with `SHINO_NATIVE_3D=1`): at an object's `MSCAL 0` the flags (1023.x) give the variant the
+`SHINO_NATIVE_OBJECTS=1` (with `SHINO_NATIVE_3D=1`; on by default with it since stage 2c, `SHINO_NATIVE_OBJECTS=0`
+turns it off): at an object's `MSCAL 0` the flags (1023.x) give the variant the
 setup would choose (`variantOf`, the setup's branches at `0x28`-`0x188`) and the light list its types; when the variant
 is one computed here (1023 or 554) and every light is read (types 0, 2, 128), none of the object's programs run on the
 VU: each batch's setup is made here in place, then the batch drawn as in stage 1, then the first pass's results written

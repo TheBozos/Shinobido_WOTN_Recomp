@@ -39,9 +39,10 @@ namespace shino::native3d
     void report();
     // Verify: while the VU runs a compared batch's variant, its XGKICKs' GIF packets are read here (each vertex's ST,
     // RGBAQ and XYZF2) to compare with the native batch's (compare()).
-    // SHINO_NATIVE_OBJECTS (with SHINO_NATIVE_3D=1): 1, the main renderer's objects whose variant and lights are read
-    // made here whole, no VU code run for them (their setup, lighting and draw); "verify", made here and by the VU, VU1
-    // memory compared after. 0 off.
+    // SHINO_NATIVE_OBJECTS (with SHINO_NATIVE_3D=1): unset or 1, the main renderer's and the characters' objects whose
+    // variant and lights are read made here whole, no VU code run for them (their setup, lighting and draw); "verify",
+    // made here and by the VU, VU1 memory and TPC compared after; 0 off (stage 1: the VU runs each program to the
+    // variant, and the variant for what it leaves).
     int objectsMode();
     // A program starting at pc (bytes) with its batch at TOP (top), ITOP (itop) vertices: made here (drawn when
     // submit) when it is a native object's; false when the VU must run it.
