@@ -187,8 +187,17 @@ The port's settings in BozoEngine:
 
 The demux copied the stream into its pending buffer a byte at a time (a guest translation each, 0x800 a sector); the
 ending's and the credits' long movies were decode-bound, about 3 minutes headless. It copies whole runs from the ring
-now (BozoEngine `appendStream`, 2026-11-26): 44 s, the same pictures and flips. In `--mute` runs the movies show about
-42 pictures a second (25 encoded, the intro alike): with no sound to pace them, the pictures follow the frames.
+now (BozoEngine `appendStream`, 2026-11-26): 44 s, the same pictures and flips.
+
+The movies still played at about 60% speed in the window, sound or none (80% headless; the 42 "new pictures" a second
+the window counted were the vblank handler's backdrops, one a field, not movie pictures; `BOZO_TIMING_LOG=1` prints
+the pictures' wall time, vblank and EE time). Each field took 23 ms of the host's time: 65,000 dispatches, 56,000
+stops and 9,300 handlers, nearly all the PCM callback `0x327f30`. With `sdkDemux` a sound packet the callback refuses
+(the EE ring full) ends the demux call and is offered again by the next, as the SDK does; on the console the player's
+turn between two calls takes time, here none, so the player spun until its sound thread made room. A demux call after
+a refusal now costs 0.2 ms of EE time (BozoEngine `kRefusedDemuxCycles`, TheBozos/BozoEngine#158): 102 handlers a
+field, 1.4 ms of host time, 25 pictures a second in the window, the pictures' EE timing unchanged (30 every 60
+vblanks), the intro's sound without a gap. The fight into the ending and the credits: 27 s headless.
 
 The Acquire logo (`ACQUIRE.PSS`) is silent on the disc: its sound track (48 kHz stereo, 512-byte interleave, as
 `NINJA.PSS`'s) is 895K samples of zero. The port feeds it to the SPU2's input like the others (core 0's input, its
