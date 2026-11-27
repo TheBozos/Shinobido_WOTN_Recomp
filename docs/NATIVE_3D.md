@@ -105,13 +105,35 @@ s/w, t/w, 1/w), the colour slot 2's after the lighting (`ftoi0`).
 `jr vi15` goes back to the batch's prelude at pair 51 (`xtop vi1`, `xitop vi9`: the batch's buffer and count; the
 lighting; `jr vi12` into the variant). The variant ends `vi15 = 51` and the E bit.
 
-## Stage 1, as built
+## Stage 1, as built (2026-11-27)
 
-Native for the batches of set `0x539c40` whose variant is the main one (pair 1023), behind `SHINO_NATIVE_3D=1`:
-the VU program runs its setup and lighting (compiled) and stops at the variant's entry (`Unit::stopAt`, checked where
-the compiled code dispatches a jump); the batch is drawn by `Renderer::draw` from VU1 memory (positions, lit colours,
-UVs, the MVP times the screen mapping above, the material of the GS registers and the vertex GIF tag's PRIM); the
-variant's GS packet is not built.
+`SHINO_NATIVE_3D=1`: the batches of set `0x539c40` whose variant is the main one (pair 1023) drawn natively
+(`runtime/shino_native3d.cpp`). The VU program runs its setup and lighting (compiled) and stops at the variant's entry
+(`Unit::stopAt`: the VU recompiler's computed jumps check it); the batch is read from VU1 memory and given to the GS
+translator's lists as a native batch (`gs::nativeTriangles`: object-space triangles and their matrix to window pixels,
+XYOFFSET folded in, in the frame's order with the other draws, the material and texture of the GS registers and the
+vertex GIF tag's PRIM): positions, lit colours, UVs, the MVP times the screen mapping, fog per vertex (the GS path
+does not draw fog yet: off on both), each triangle's ADC as the variant computes it, and the clipper's decisions:
+- all three corners nearer than the near plane (w < 1) or farther than the far one (w > 2500): rejected;
+- all three outside one guard-band plane, every corner in front: rejected (behind the camera a corner's x and y are
+  mirrored, so the clipper cuts at the near plane first);
+- across the near or the far plane: cut there (Sutherland-Hodgman in clip space, the attributes interpolated);
+- the guard band's cuts left to the GPU.
+Then the variant runs on (compiled) with its GS packets not sent: what it leaves in VU1 memory (the clip positions in
+slot 0, the ADC in slot 1's w) and in the registers is read by later programs, the lit objects' passes among them
+(without it, the sunlit top of a cliff in the final mission came out dark).
+
+Checks:
+- `SHINO_NATIVE_3D=verify`: each batch made natively, then by the VU, the clip positions and ADC flags compared:
+  195,109 batches (9.0M vertices) of play from the frame-5200 state and 277,590 of the final fight, none different.
+- Frame-exact window captures (`SHINO_REAL_TIME=0 PS2X_FRAME_CAP=25`, so the window presents each game frame;
+  without the cap a capture can land a frame late): 0.16 to 1% of the pixels differ by more than 8 of 255, at edges
+  (float vertices against the GS's 1/16 of a pixel) and in texture sampling.
+- A whole mission day (23,000 frames, 7.1M batches) natively, headless: no fault; the game's RAM at frame 5450 is the
+  same as without (nothing the game computes depends on how it is drawn).
+
+`SHINO_NATIVE_3D=skip` leaves the variant out (its first pass's memory results written back): the registers it would
+leave are then missing, so lit passes come out wrong; it is there for finding what later programs read.
 
 ## The plan
 

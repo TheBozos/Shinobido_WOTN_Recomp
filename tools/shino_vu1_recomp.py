@@ -569,6 +569,7 @@ def emit_image(img):
             w('    return kEnd;')
         elif x.lk in ('JR', 'JALR'):
             w(f'    pc = to & 0x{MASK:04x}u;')
+            w('    if (pc == v.stopAt) return pc; // a native draw takes over there (runtime/shino_native3d.cpp)')
             w(f'    if (pc < 0x{img.first * 8:04x}u || pc > 0x{img.last * 8:04x}u || !segmentOk({img.id}, pc / {SEGMENT * 8})) return pc;')
             w('    goto dispatch;')
         else:

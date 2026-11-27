@@ -12,6 +12,7 @@
 // program after the next pair. Floats are the PC's (no PS2 overflow rules beyond clamping to the largest finite).
 #include "shino_gs.h"
 #include "shino_port.h"
+#include "shino_native3d.h"
 #include "shino_vu.h"
 #include <array>
 #include <bit>
@@ -653,6 +654,7 @@ namespace shino
             uint64_t ended = 0, handed = 0, noImage = 0, mismatches = 0, verified = 0;
             std::map<uint32_t, uint64_t> handedAt, noImageAt; // by pc
         } g_compiled;
+        bool g_stopped = false; // the compiled run ended at Unit::stopAt
         std::array<int, 2048> g_lastImage = [] { std::array<int, 2048> a; a.fill(-1); return a; }(),
                               g_lastImage0 = [] { std::array<int, 2048> a; a.fill(-1); return a; }(); // VU1's, VU0's
         std::vector<std::vector<uint32_t>> g_candidates; // by pair: the images that hold it
@@ -724,6 +726,11 @@ namespace shino
                 if (r == vu::kEnd)
                 {
                     ++g_compiled.ended;
+                    return;
+                }
+                if (!(r & vu::kInterpret) && (r & v.pcMask) == v.stopAt) // a native draw takes over (shino_native3d.cpp)
+                {
+                    g_stopped = true;
                     return;
                 }
                 pc = r & v.pcMask;
@@ -934,7 +941,40 @@ namespace shino
             v.vi[0] = 0;
             const uint32_t pc = pcBytes & v.pcMask;
             static const bool vu0Compiled = !std::getenv("SHINO_VU0_INTERP"); // SHINO_VU0_INTERP=1: VU0 interpreted
-            if (!g_traceThis && compiledOn() && (!v.vu0 || vu0Compiled))
+            static const bool verifying = std::getenv("SHINO_VU_VERIFY") != nullptr;
+            // Native 3D (shino_native3d.cpp): the main renderer's program stops at its variant and the batch is drawn
+            // natively; verify: drawn by the VU as well, the two compared.
+            const native3d::Mode nativeMode = native3d::mode();
+            const uint32_t takeOver = !v.vu0 && !g_traceThis && !verifying && nativeMode != native3d::Mode::Off && compiledOn()
+                                          ? native3d::takeOverAt(v)
+                                          : 0u;
+            if (takeOver)
+            {
+                v.stopAt = takeOver;
+                g_stopped = false;
+                compiledFrom(pc);
+                v.stopAt = ~0u;
+                if (g_stopped)
+                {
+                    native3d::batch(v, nativeMode != native3d::Mode::Verify);
+                    if (nativeMode == native3d::Mode::Verify)
+                    {
+                        compiledFrom(takeOver); // the variant, as without native drawing
+                        native3d::compare(v);
+                    }
+                    else if (nativeMode == native3d::Mode::Skip)
+                        v.vi[15] = 51; // as the variant leaves it: the next batch's prelude (pair 51)
+                    else
+                    {
+                        // The variant run for what it leaves (VU1 memory and registers: later programs read them), its
+                        // GS packets not sent: the batch is drawn natively.
+                        g_noKick = true;
+                        compiledFrom(takeOver);
+                        g_noKick = false;
+                    }
+                }
+            }
+            else if (!g_traceThis && compiledOn() && (!v.vu0 || vu0Compiled))
                 runCompiled(pc);
             else
                 interpret(pc);
@@ -1434,6 +1474,7 @@ namespace shino
 
     void vif::report()
     {
+        native3d::report();
         std::printf("[shino:vif]");
         for (uint32_t cmd = 0; cmd < g_vif.counts.size(); ++cmd)
             if (g_vif.counts[cmd])

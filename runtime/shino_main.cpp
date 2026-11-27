@@ -200,7 +200,9 @@ int main(int argc, char **argv)
             return a == "--help" ? 0 : 2;
         }
     }
-    options.realTime = window;
+    // SHINO_REAL_TIME=0: a window run on the EE clock alone (nothing host-timed: the same frames as headless), for
+    // captures to compare between builds or modes.
+    options.realTime = window && !(std::getenv("SHINO_REAL_TIME") && *std::getenv("SHINO_REAL_TIME") == '0');
     options.gameTag = "SCES-53931"; // a save state loads only into Shinobido
     bozo::host::FreeHost host(options);
     bozo::ee::Dispatcher d(host);

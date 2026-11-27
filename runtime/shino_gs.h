@@ -3,8 +3,17 @@
 #pragma once
 #include <cstdint>
 
+namespace bozo::render
+{
+    struct Vertex;
+}
+
 namespace shino::gs
 {
+    // A native draw (runtime/shino_native3d.cpp): triangles in the object's space with their object-to-GS-screen matrix
+    // (column c is matrix[4c..4c+3]: GS pixels times w, GS Z times w, w), drawn with PRIM `prim`'s attributes (~0: the
+    // PRIM set) and its context's registers and texture, in the frame's order with the GS packets' draws.
+    void nativeTriangles(uint64_t prim, const float matrix[16], const bozo::render::Vertex *vertices, uint32_t count);
     // A GS register written with its raw value (PRIM 0x00 ... LABEL 0x62): A+D, REGLIST, a tag's PRE.
     void writeRegister(uint32_t address, uint64_t value);
     // A PACKED quadword for register descriptor `r` (0x0 PRIM ... 0xe A+D, 0xf NOP).

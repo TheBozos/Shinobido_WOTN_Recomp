@@ -568,6 +568,10 @@ namespace shino::gs
             std::shared_ptr<const Texture> texture;
             uint32_t first = 0, count = 0; // its vertices in the renderer's frame being built (appendVertices)
             uint64_t made = 0; // the material's serial (emit): batches with the same one and texture merge
+            // A native draw's batch (nativeTriangles): object-space vertices and their matrix to window pixels; the
+            // others are window pixels already (an identity matrix).
+            bool native = false;
+            std::array<float, 16> matrix{};
         };
         std::unordered_map<uint32_t, std::vector<Batch>> g_frameDraws; // FRAME.FBP -> draws in order
         // The frame's vertices are made straight into the renderer's frame being built (Renderer::appendVertices): a
@@ -710,7 +714,7 @@ namespace shino::gs
         // Where a primitive's triangles go: its frame buffer's last batch (or last two: a two-pass draw), a new one when
         // the texture or the materials changed. False for ZTST NEVER (not drawn). The vectors stay good while no other
         // primitive is placed.
-        bool targetFor(const Maker &m, Batch *&into, Batch *&alsoInto)
+        bool targetFor(const Maker &m, Batch *&into, Batch *&alsoInto, const std::array<float, 16> *matrix = nullptr)
         {
             const Context &c = *m.c;
             into = alsoInto = nullptr;
@@ -764,11 +768,18 @@ namespace shino::gs
             // A batch grows only while its vertices are the last made (another frame buffer's draws between: a new one).
             const uint32_t end = g_renderer.builtVertices();
             auto same = [&](const Batch &b, uint64_t serial) {
-                return b.made == serial && b.texture == tex && b.first + b.count == end;
+                return b.made == serial && b.texture == tex && b.first + b.count == end && b.native == (matrix != nullptr) &&
+                       (!matrix || b.matrix == *matrix);
             };
             auto fresh = [&](const Material &material, uint64_t serial) {
                 Batch b;
                 b.material = material;
+                if (matrix)
+                {
+                    b.native = true;
+                    b.matrix = *matrix;
+                    b.material.useQ = false; // the matrix gives the perspective
+                }
                 b.texture = tex;
                 b.made = serial;
                 b.first = end;
@@ -1089,6 +1100,30 @@ namespace shino::gs
     }
     void imageFlush();
     void imageQuadword(const uint8_t *quadword);
+
+    void nativeTriangles(uint64_t prim, const float matrix[16], const Vertex *vertices, uint32_t count)
+    {
+        if (prim != ~0ull)
+            writeRegister(0x00, prim);
+        const uint64_t attrs = (g_s.prmodecont & 1u) ? g_s.prim : (g_s.prmode & ~7ull) | (g_s.prim & 7u);
+        const Maker make = makerFor(attrs);
+        const Context &c = *make.c;
+        // GS screen pixels to window pixels: less the context's XYOFFSET (12.4), as vertexKick takes it off.
+        std::array<float, 16> m;
+        std::copy(matrix, matrix + 16, m.begin());
+        const float ox = float(c.xyoffset & 0xFFFFu) / 16.0f, oy = float((c.xyoffset >> 32) & 0xFFFFu) / 16.0f;
+        for (int col = 0; col < 4; ++col)
+        {
+            m[4 * col + 0] -= ox * m[4 * col + 3];
+            m[4 * col + 1] -= oy * m[4 * col + 3];
+        }
+        Batch *into = nullptr, *alsoInto = nullptr;
+        if (!targetFor(make, into, alsoInto, &m))
+            return;
+        Vertex *p = place(into, alsoInto, count);
+        std::copy(vertices, vertices + count, p);
+        g_prims += count / 3;
+    }
 
     void writeRegister(uint32_t address, uint64_t value)
     {
@@ -1417,7 +1452,7 @@ namespace shino::gs
             for (const Batch &b : it->second)
             {
                 if (b.first + b.count <= renderer.builtVertices()) // (the vertices since the last flip only)
-                    renderer.drawRange(b.material, kIdentity, b.first, b.count, b.texture);
+                    renderer.drawRange(b.material, b.native ? b.matrix.data() : kIdentity, b.first, b.count, b.texture);
                 shown += b.count / 3;
             }
         if (static const bool onShinoTestQuad = std::getenv("SHINO_TEST_QUAD") != nullptr; onShinoTestQuad) // presentation check: a red quad over the frame
