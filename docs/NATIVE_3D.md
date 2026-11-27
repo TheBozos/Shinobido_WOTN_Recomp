@@ -426,21 +426,25 @@ its 4:3 view, so walls and ground were missing at the new sides. The camera code
 - The main camera is the first a scene makes (`gp-0x6d44`, `0x625a2c`); each scene has one more, the radar's (at the
   origin, its needle placed in its view's top right).
 
-So the port widens the main camera's horizontal tangent 4/3 (native site `0x10b1f0`, the `mul.s` of the tangent by the
+So the port widens every camera's horizontal tangent 4/3 (native site `0x10b1f0`, the `mul.s` of the tangent by the
 aspect) when widescreen is wanted: the game projects, culls and clips for 16:9 itself, the GS path's draws and the
-particles (`0x601710`) included, nothing squeezed at the draw. The radar's camera keeps its 4:3 view: its needle is
-drawn as the HUD is, 3/4 as wide towards its side of the screen (the right edge, with its 2D ring). To know whose
-draws follow, each scene pass's GS set-up is marked (native site `0x44735c`, the `pcpyld` that pairs DTHE's value
-with its address: the view's kind in bits 8-15, DTHE drawing nothing): the main view widened, the main view, or
-another. A frame is shown 16:9 when its main view was widened and drew (natively or through the GS packets); the
-movies and the menus' pictures stay 4:3. `SHINO_TRACE_FOV` prints each camera's tangent, `SHINO_TRACE_WIDE` the
-frame's marks.
+particles (`0x601710`) included, nothing squeezed at the draw. The main camera's view is centred (Hor+). Another
+camera's (the radar's) is also shifted right through its view's horizontal shift (`+0x78`, which `0x4377a0` reads;
+the port writes it only while the value there is its own): its needle stays 3/4 as wide at the right edge, as its 2D
+ring does (the HUD's triangles, each anchored to its third of the screen). The shift for that eighth of the screen,
+tan / 16, is measured (the needle in its ring), not derived: the shift moves the radar's drawing four times as far as
+the projection's formula suggests.
+
+The radar's draws can't be told from the main view's at the GS: the game draws all the views' objects before it
+sends the last view's set-up. Each scene pass's GS set-up is still marked (native site `0x44735c`, the `pcpyld` that
+pairs DTHE's value with its address: the view's kind in bits 8-15, DTHE drawing nothing), for the frame: it is shown
+16:9 when its main view was widened and drew (natively or through the GS packets); the movies and the menus'
+pictures stay 4:3. `SHINO_TRACE_FOV` prints each camera's tangent, `SHINO_TRACE_WIDE` the frame's marks.
 
 Checked (`SHINO_WIDESCREEN=1`, captures): the town, a mission, the Hideout and the final fight fill the screen's sides
-(the ground at the bottom corners, the walls), the radar's needle in its ring; 4:3 is unchanged (the same picture,
-byte for byte). Left: the 2D the GS packets draw (the Hideout's dialogs, the menus over a 3D scene) is shown
-stretched in a 16:9 frame (only the HUD's program, `0x4f3f60`, is narrowed); with `SHINO_NATIVE_3D=0` the radar's
-needle is not anchored.
+(the ground at the bottom corners, the walls), the radar's needle centred in its ring (the town, a mission, the final
+fight); 4:3 is unchanged (the same picture, byte for byte). Left: the 2D the GS packets draw (the Hideout's dialogs,
+the menus over a 3D scene) is shown stretched in a 16:9 frame (only the HUD's program, `0x4f3f60`, is narrowed).
 
 ## The plan
 

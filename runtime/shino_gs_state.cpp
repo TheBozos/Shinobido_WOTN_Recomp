@@ -1122,12 +1122,11 @@ namespace shino::gs
     namespace
     {
         constexpr float kWide = 0.75f;        // a 4:3 picture's width in a 16:9 one
-        ViewKind g_view = ViewKind::Unmarked; // the view whose draws follow (its GS set-up's mark)
+        ViewKind g_view = ViewKind::Unmarked; // the view last set up (its GS set-up's mark)
         bool g_frameWide = false;             // this frame's main view widened (the game drew it for 16:9)
         bool g_frameHad3D = false;            // a draw of the widened main view this frame (native or the GS packets')
         bool g_lastWide = false;              // the frame before shown 16:9
-        // the 2D and the other views' draws narrowed: this frame's main view widened so far, or the last frame's (the HUD
-        // may come before the 3D)
+        // the HUD narrowed: this frame's main view widened so far, or the last frame's (the HUD may come before the 3D)
         bool narrowing() { return g_frameWide || g_lastWide; }
         void noteDraw()
         {
@@ -1147,10 +1146,9 @@ namespace shino::gs
         const Context &c = g_s.ctx[(attrs >> 9) & 1u];
         const uint32_t type = attrs & 7u;
         static const uint32_t need[8] = {1, 2, 2, 3, 3, 3, 2, 1};
-        // widescreen: the HUD's triangles (and any 2D of another view than the main) 3/4 as wide towards their side; the
-        // main view's own (its particles) already drawn for 16:9 by the game
+        // widescreen: the HUD's triangles 3/4 as wide towards their side; the particles already drawn for 16:9 by the game
         const float width = frameWidth(c);
-        const bool narrow = narrowing() && width > 0.0f && (place == Place::Hud || g_view == ViewKind::Other);
+        const bool narrow = narrowing() && width > 0.0f && place == Place::Hud;
         GsVertex g[3];
         for (uint32_t i = 0; i + need[type] <= count; i += need[type])
         {
@@ -1206,18 +1204,7 @@ namespace shino::gs
             m[4 * col + 0] -= ox * m[4 * col + 3];
             m[4 * col + 1] -= oy * m[4 * col + 3];
         }
-        noteDraw();
-        // Widescreen: the main view drawn for 16:9 by the game; another view's draw (the radar's) 3/4 as wide towards
-        // the side its middle vertex is on, as the HUD's
-        if (const float width = frameWidth(c); narrowing() && g_view == ViewKind::Other && width > 0.0f && count)
-        {
-            const Vertex &v = vertices[count / 2];
-            const float w = m[3] * v.x + m[7] * v.y + m[11] * v.z + m[15];
-            const float x = m[0] * v.x + m[4] * v.y + m[8] * v.z + m[12];
-            const float anchor = w != 0.0f ? anchorFor(x / w, width) : width * 0.5f;
-            for (int col = 0; col < 4; ++col)
-                m[4 * col + 0] = kWide * m[4 * col + 0] + (1.0f - kWide) * anchor * m[4 * col + 3];
-        }
+        noteDraw(); // widescreen: the views drawn for 16:9 by the game
         Batch *into = nullptr, *alsoInto = nullptr;
         if (!targetFor(make, into, alsoInto, &m))
             return;

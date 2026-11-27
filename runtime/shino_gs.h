@@ -37,8 +37,10 @@ namespace shino::gs
     extern bool (*widescreenWanted)();
     extern void (*widescreenShown)(bool wide);
     bool widescreenOn(); // wanted now (the setting, SHINO_WIDESCREEN)
-    // The view whose draws follow, as the port marks its GS set-up (DTHE's bits 8-15, shino_port.cpp): the main camera's
-    // (widened for 16:9 by the game itself, or not) or another's (the radar's: its draws anchored as the HUD is).
+    // The view a scene pass sets up, as the port marks its GS set-up (DTHE's bits 8-15, shino_port.cpp): the main
+    // camera's (widened for 16:9 by the game itself, or not) or another's (the radar's). A frame whose main view was
+    // widened is shown 16:9. (The game draws all the views' objects before the last view's set-up: a mark does not
+    // tell whose draws follow.)
     enum class ViewKind : uint8_t
     {
         Unmarked = 0,

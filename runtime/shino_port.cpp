@@ -140,20 +140,36 @@ namespace shino
                 return gravityStep(rdram, ctx, 1, 0.2f);
             case 0x003a2640u: // native site: swc1 f0,0x314(s0): the other characters' gravity (0x3a25a0, its law 0x10d970)
                 return gravityStep(rdram, ctx, 0, 1.0f, 16);
-            // Widescreen at the game's own source (docs/NATIVE_3D.md): the main camera's view 4/3 as wide, so the game
-            // projects and culls for 16:9 itself; each view's GS set-up marked so the GS translator knows whose draws
-            // follow (the radar's own camera is anchored as the HUD is).
+            // Widescreen at the game's own source (docs/NATIVE_3D.md): each camera's view 4/3 as wide, so the game
+            // projects and culls for 16:9 itself. The main camera's centred (Hor+); the others' (the radar's: its needle
+            // at its view's top right) also shifted an eighth of the screen right, their drawing 3/4 as wide towards the
+            // right edge as the HUD's right side is (its ring). Each view's GS set-up marked with its kind.
             case 0x0010b1f0u: // native site: mul.s f0,f1,f0: a camera's (a0) horizontal tangent, its vertical x the aspect 4/3
             {
                 const uint32_t camera = ctx->r[4].uw[0];
-                const bool widened = camera == mainCamera(rdram) && gs::widescreenOn();
-                if (camera == mainCamera(rdram))
-                    g_mainWidened = widened;
+                const bool on = gs::widescreenOn(), main = camera == mainCamera(rdram);
+                if (main)
+                    g_mainWidened = on;
+                ctx->f[0] = ctx->f[1] * ctx->f[0] * (on ? 4.0f / 3.0f : 1.0f);
+                uint32_t view = 0;
+                std::memcpy(&view, rdram + ((camera + 0xf4u) & 0x1FFFFFFu), 4);
+                if (!main && view) // the projection's horizontal shift (view +0x78, read by 0x4377a0)
+                {
+                    static std::unordered_map<uint32_t, float> written; // left alone once the game sets its own
+                    float shift;
+                    std::memcpy(&shift, rdram + ((view + 0x78u) & 0x1FFFFFFu), 4);
+                    auto mine = written.find(view);
+                    if (shift == (mine == written.end() ? 0.0f : mine->second))
+                    {
+                        shift = on ? ctx->f[0] / 16.0f : 0.0f; // an eighth of the screen (measured: the radar's needle in its ring)
+                        std::memcpy(rdram + ((view + 0x78u) & 0x1FFFFFFu), &shift, 4);
+                        written[view] = shift;
+                    }
+                }
                 if (static const bool trace = std::getenv("SHINO_TRACE_FOV") != nullptr; trace)
-                    std::printf("[shino:fov] frame %llu camera %08x (main %08x) tan %g x aspect %g%s\n",
-                                static_cast<unsigned long long>(bozo::port::vblankCount(rt)), camera, mainCamera(rdram), ctx->f[1],
-                                ctx->f[0], widened ? " x 4/3" : "");
-                ctx->f[0] = ctx->f[1] * ctx->f[0] * (widened ? 4.0f / 3.0f : 1.0f);
+                    std::printf("[shino:fov] frame %llu camera %08x (main %08x) tangent %g%s\n",
+                                static_cast<unsigned long long>(bozo::port::vblankCount(rt)), camera, mainCamera(rdram), ctx->f[0],
+                                on ? (main ? " widened" : " widened, shifted right") : "");
                 return true;
             }
             case 0x0044735cu: // native site: pcpyld a1,v0,a0: a view's (s2) DTHE (a0) and its address (v0), its kind in bits 8-15
