@@ -103,6 +103,16 @@ namespace shino::native3d
         {
             std::vector<std::array<float, 4>> position, uv, colour, normal;
         };
+        // Four lanes at a time, each result clamped as the VU's arithmetic (vu::clamped: no NaN, nothing past the
+        // largest finite): the same SSE operations as the VU model's, so the same bits.
+        inline __m128 ldq(const uint8_t *mem, uint32_t qw) { return _mm_loadu_ps(reinterpret_cast<const float *>(mem + 16u * (qw & 0x3FFu))); }
+        inline __m128 cl(__m128 x) { return vu::clamped(x); }
+        inline __m128 itof4(__m128 x) { return _mm_cvtepi32_ps(_mm_castps_si128(x)); }
+        inline __m128 mul4(__m128 a, __m128 b) { return cl(_mm_mul_ps(a, b)); }
+        inline __m128 madd4(__m128 acc, __m128 a, __m128 b) { return cl(_mm_add_ps(acc, _mm_mul_ps(a, b))); }
+        template <int L> inline __m128 bc(__m128 x) { return _mm_shuffle_ps(x, x, _MM_SHUFFLE(L, L, L, L)); }
+        inline void st4(std::array<float, 4> &d, __m128 x) { _mm_storeu_ps(d.data(), x); }
+        inline __m128 ld4(const std::array<float, 4> &d) { return _mm_loadu_ps(d.data()); }
         bool nativeSetupCore(const uint8_t *mem, uint32_t base, uint32_t count, SetupOut &out, bool skin)
         {
             auto F = [&](uint32_t qw, int i) {
@@ -140,111 +150,82 @@ namespace shino::native3d
                     out.colour[k] = F4(q + 2);
                     out.normal[k] = F4(q + 3);
                 }
-                auto plus0 = [&](V4 x) { // ADDx by vf0.x: a copy, clamped (and -0 made +0)
-                    for (float &f : x)
-                        f = C(f + 0.0f);
-                    return x;
-                };
+                const __m128 W1 = _mm_set1_ps(w1), W2 = _mm_set1_ps(w2), one = _mm_set1_ps(1.0f), zero = _mm_setzero_ps();
+                const __m128 N1 = _mm_set1_ps(C(w1 * inv128)), N2 = _mm_set1_ps(C(w2 * inv128)), I128 = _mm_set1_ps(inv128);
+                const __m128 mat = ldq(mem, 1019);
                 for (uint32_t k = 0; k < count; ++k)
                 {
                     const uint32_t in = base + 5u * k;
-                    V4 pos = F4(in), uv = F4(in + 1);
-                    if (k > 0) // the first vertex's straight from memory, the others' copied by ADDx
+                    __m128 pos = ldq(mem, in), uv = ldq(mem, in + 1);
+                    if (k > 0) // the first vertex's straight from memory, the others' copied by ADDx (clamped, -0 made +0)
                     {
-                        uv = plus0(uv);
+                        uv = cl(_mm_add_ps(uv, zero));
                         if (!morph)
-                            pos = plus0(pos);
+                            pos = cl(_mm_add_ps(pos, zero));
                     }
                     if (morph)
-                        for (int i = 0; i < 4; ++i)
-                            pos[i] = C(C(pos[i] * w1) + F(base + 5u * count + k, i) * w2);
-                    // the blended rows: 699 (the translation), 696, 697, 698
+                        pos = madd4(mul4(pos, W1), ldq(mem, base + 5u * count + k), W2);
+                    // the blended rows 696, 697, 698 and 699 (the translation)
+                    const __m128 wq = ldq(mem, in + 4);
                     uint32_t bone[4];
-                    float wt[4];
-                    for (int j = 0; j < 4; ++j)
+                    std::memcpy(bone, mem + 16u * ((in + 4) & 0x3FFu), 16);
+                    const __m128 w0 = bc<0>(wq), wb1 = bc<1>(wq), wb2 = bc<2>(wq), wb3 = bc<3>(wq);
+                    __m128 R[4];
+                    for (uint32_t r = 0; r < 4; ++r)
                     {
-                        bone[j] = static_cast<uint32_t>(I(in + 4, j)) & 0xFFFFu;
-                        wt[j] = F(in + 4, j);
+                        __m128 acc = mul4(ldq(mem, 696u + r + (bone[0] & 0xFFFFu)), w0);
+                        acc = madd4(acc, ldq(mem, 696u + r + (bone[1] & 0xFFFFu)), wb1);
+                        acc = madd4(acc, ldq(mem, 696u + r + (bone[2] & 0xFFFFu)), wb2);
+                        R[r] = madd4(acc, ldq(mem, 696u + r + (bone[3] & 0xFFFFu)), wb3);
                     }
-                    V4 R[4]; // 696, 697, 698, 699
-                    for (int r = 0; r < 4; ++r)
-                        for (int i = 0; i < 4; ++i)
-                        {
-                            float acc = C(F(696u + r + bone[0], i) * wt[0]);
-                            acc = C(acc + F(696u + r + bone[1], i) * wt[1]);
-                            acc = C(acc + F(696u + r + bone[2], i) * wt[2]);
-                            R[r][i] = C(acc + F(696u + r + bone[3], i) * wt[3]);
-                        }
-                    V4 &P = out.position[k];
-                    for (int i = 0; i < 4; ++i)
-                        P[i] = C(C(C(C(R[3][i] * 1.0f) + R[0][i] * pos[0]) + R[1][i] * pos[1]) + R[2][i] * pos[2]);
-                    out.uv[k] = uv;
-                    for (int i = 0; i < 4; ++i)
-                        out.colour[k][i] = static_cast<float>(I(in + 2, i));
+                    st4(out.position[k], madd4(madd4(madd4(mul4(R[3], one), R[0], bc<0>(pos)), R[1], bc<1>(pos)), R[2], bc<2>(pos)));
+                    st4(out.uv[k], uv);
+                    __m128 colour = itof4(ldq(mem, in + 2));
                     if (lit)
                     {
-                        V4 n;
-                        for (int i = 0; i < 4; ++i)
-                            n[i] = morph ? C(C(static_cast<float>(I(in + 3, i)) * C(w1 * inv128)) +
-                                             static_cast<float>(I(base + 6u * count + k, i)) * C(w2 * inv128))
-                                         : C(static_cast<float>(I(in + 3, i)) * inv128);
-                        for (int i = 0; i < 4; ++i)
-                            out.normal[k][i] = C(C(C(R[0][i] * n[0]) + R[1][i] * n[1]) + R[2][i] * n[2]);
+                        const __m128 n = morph ? madd4(mul4(itof4(ldq(mem, in + 3)), N1), itof4(ldq(mem, base + 6u * count + k)), N2)
+                                               : mul4(itof4(ldq(mem, in + 3)), I128);
+                        st4(out.normal[k], madd4(madd4(mul4(R[0], bc<0>(n)), R[1], bc<1>(n)), R[2], bc<2>(n)));
                     }
                     else
                     {
-                        for (int i = 0; i < 4; ++i)
-                            out.colour[k][i] = C(out.colour[k][i] * material[i]);
+                        colour = mul4(colour, mat);
                         out.normal[k] = F4(base + 4u * k + 3); // slot 3 not written
                     }
+                    st4(out.colour[k], colour);
                 }
                 if (!lit)
                     return true; // (unlit: no pass over the rounded batch)
             }
+            const __m128 W1 = _mm_set1_ps(w1), W2 = _mm_set1_ps(w2);
+            const __m128 N1 = _mm_set1_ps(C(w1 * inv128)), N2 = _mm_set1_ps(C(w2 * inv128)), I128 = _mm_set1_ps(inv128);
+            const __m128 mat = _mm_loadu_ps(material.data());
             for (uint32_t k = 0; !skin && k < all; ++k)
             {
                 const uint32_t q = base + 4u * k;
-                out.uv[k] = F4(q + 1);
-                V4 p = {F(q, 0), F(q, 1), F(q, 2), F(q, 3)};
+                st4(out.uv[k], ldq(mem, q + 1));
+                __m128 p = ldq(mem, q);
                 if (k >= converted) // left as they are (the lit morph's loop ends at the batch's end)
                 {
-                    out.position[k] = p;
-                    out.colour[k] = {F(q + 2, 0), F(q + 2, 1), F(q + 2, 2), F(q + 2, 3)};
-                    out.normal[k] = {F(q + 3, 0), F(q + 3, 1), F(q + 3, 2), F(q + 3, 3)};
+                    st4(out.position[k], p);
+                    st4(out.colour[k], ldq(mem, q + 2));
+                    st4(out.normal[k], ldq(mem, q + 3));
                     continue;
                 }
                 if (morph) // ACC = p (1 - a), then + target a
-                {
-                    const uint32_t t = base + 4u * count + k;
-                    for (int i = 0; i < 4; ++i)
-                        p[i] = C(C(p[i] * w1) + F(t, i) * w2);
-                }
-                out.position[k] = p;
-                for (int i = 0; i < 4; ++i)
-                    out.colour[k][i] = static_cast<float>(I(q + 2, i));
+                    p = madd4(mul4(p, W1), ldq(mem, base + 4u * count + k), W2);
+                st4(out.position[k], p);
+                st4(out.colour[k], itof4(ldq(mem, q + 2)));
                 if (lit)
-                {
-                    V4 n;
-                    if (morph)
-                    {
-                        const uint32_t t = base + 4u * count + count + k;
-                        for (int i = 0; i < 4; ++i)
-                            n[i] = C(C(static_cast<float>(I(q + 3, i)) * C(w1 * inv128)) + static_cast<float>(I(t, i)) * C(w2 * inv128));
-                    }
-                    else
-                        for (int i = 0; i < 4; ++i)
-                            n[i] = C(static_cast<float>(I(q + 3, i)) * inv128);
-                    out.normal[k] = n;
-                }
+                    st4(out.normal[k], morph ? madd4(mul4(itof4(ldq(mem, q + 3)), N1), itof4(ldq(mem, base + 5u * count + k)), N2)
+                                             : mul4(itof4(ldq(mem, q + 3)), I128));
                 else
-                    for (int i = 0; i < 4; ++i)
-                        out.normal[k][i] = F(q + 3, i);
+                    st4(out.normal[k], ldq(mem, q + 3));
             }
             if (!lit)
             {
                 for (V4 &c : out.colour)
-                    for (int i = 0; i < 4; ++i)
-                        c[i] = C(c[i] * material[i]);
+                    st4(c, mul4(ld4(c), mat));
                 return true;
             }
             // the world rows (976-979): the lights brought into the object's space
@@ -269,9 +250,12 @@ namespace shino::native3d
                 {
                     for (int i = 0; i < 3; ++i)
                         rec0[i] = C(rec0[i] * c1020[0]);
-                    for (V4 &c : out.colour)
-                        for (int i = 0; i < 3; ++i)
-                            c[i] = C(c[i] + rec0[i]);
+                    const __m128 add = _mm_loadu_ps(rec0.data());
+                    for (V4 &c : out.colour) // (xyz: w kept)
+                    {
+                        const __m128 old = ld4(c);
+                        st4(c, vu::keepW(cl(_mm_add_ps(old, add)), old));
+                    }
                     at += 1;
                     continue;
                 }
@@ -354,9 +338,9 @@ namespace shino::native3d
                     break;
                 return false; // a light type not read yet
             }
-            for (V4 &c : out.colour) // MINII then MUL, each clamped (a NaN 0)
-                for (int i = 0; i < 4; ++i)
-                    c[i] = C(C(std::min(c[i], 255.0f)) * material[i]);
+            const __m128 limit = _mm_set1_ps(255.0f);
+            for (V4 &c : out.colour) // MINII then MUL, each clamped (a NaN 0): min_ps(I, c) as the VU model's
+                st4(c, mul4(cl(_mm_min_ps(limit, ld4(c))), mat));
             return true;
         }
 
@@ -373,13 +357,14 @@ namespace shino::native3d
                 std::memcpy(&x, mem + 16u * (qw & 0x3FFu) + 4u * static_cast<uint32_t>(i), 4);
                 return x;
             };
-            const auto C = vu::clampF;
-            for (std::array<float, 4> &uv : out.uv)
+            const __m128 m956 = ldq(mem, 956), m957 = ldq(mem, 957), t = mul4(ldq(mem, 958), _mm_set1_ps(1.0f));
+            const __m128 xy = _mm_castsi128_ps(_mm_set_epi32(0, 0, -1, -1));
+            for (std::array<float, 4> &uv : out.uv) // (x and y: z and w kept)
             {
-                const float u = uv[0], v = uv[1];
-                for (int i = 0; i < 2; ++i)
-                    uv[i] = C(C(C(F(958, i) * 1.0f) + F(956, i) * u) + F(957, i) * v);
+                const __m128 old = ld4(uv), r = madd4(madd4(t, m956, bc<0>(old)), m957, bc<1>(old));
+                st4(uv, _mm_or_ps(_mm_and_ps(xy, r), _mm_andnot_ps(xy, old)));
             }
+            (void)F;
             return true;
         }
 
@@ -651,27 +636,26 @@ namespace shino::native3d
         // own when the count is odd.
         // (a list's: three at a time, the batch's own)
         const uint32_t passed = kind.clipper && !kind.list ? std::max<uint32_t>(((4u * count + 4u) & 0x7FF8u) / 4u, 2u) : count;
-        std::vector<std::array<float, 4>> clip(passed);
-        std::vector<uint16_t> adc(passed, 0);
-        std::vector<bozo::render::Vertex> corner(count);
+        // (the working buffers kept from batch to batch: no allocation a batch)
+        static std::vector<std::array<float, 4>> clip;
+        static std::vector<uint16_t> adc;
+        static std::vector<bozo::render::Vertex> corner;
+        clip.resize(passed);
+        adc.assign(passed, 0);
+        corner.resize(count);
+        // The rows with z = w (lane 2 takes lane 3's), as the variant's vf24 and vf28-vf30
+        const __m128 rz[4] = {_mm_setr_ps(row[0][0], row[0][1], row[0][3], row[0][3]), _mm_setr_ps(row[1][0], row[1][1], row[1][3], row[1][3]),
+                              _mm_setr_ps(row[2][0], row[2][1], row[2][3], row[2][3]), _mm_setr_ps(row[3][0], row[3][1], row[3][3], row[3][3])};
+        const __m128 r3c = cl(rz[3]);
         for (uint32_t k = 0; k < passed; ++k)
         {
             const uint32_t q = base + 4u * k;
-            const float px = lane(v, q, 0), py = lane(v, q, 1), pz = lane(v, q, 2);
-            // As the variant does it: ACC = row 3, then + row 0 x, + row 1 y, then + row 2 z.
-            std::array<float, 4> r;
-            for (int i = 0; i < 4; ++i)
-            {
-                const float r3 = i == 2 ? row[3][3] : row[3][i]; // vf24: row 3 with z = w
-                const float r0 = i == 2 ? row[0][3] : row[0][i], r1 = i == 2 ? row[1][3] : row[1][i], r2 = i == 2 ? row[2][3] : row[2][i];
-                // each step clamped as the VU's (no NaN, nothing past the largest finite: what stale vertices past the
-                // batch may hold)
-                float a = vu::clampF(r3);
-                a = vu::clampF(a + r0 * px);
-                a = vu::clampF(a + r1 * py);
-                r[i] = vu::clampF(a + r2 * pz);
-            }
-            clip[k] = r;
+            const __m128 pv = ldq(v.data, q);
+            const float px = _mm_cvtss_f32(pv), py = lane(v, q, 1), pz = lane(v, q, 2);
+            // As the variant does it: ACC = row 3, then + row 0 x, + row 1 y, then + row 2 z, each step clamped as the
+            // VU's (no NaN, nothing past the largest finite: what stale vertices past the batch may hold)
+            _mm_storeu_ps(clip[k].data(), madd4(madd4(madd4(r3c, rz[0], bc<0>(pv)), rz[1], bc<1>(pv)), rz[2], bc<2>(pv)));
+            const std::array<float, 4> &r = clip[k];
             if (k >= count)
                 continue;
             bozo::render::Vertex &out = corner[k];
@@ -728,7 +712,8 @@ namespace shino::native3d
             // way between (the strip's winding); ADC where the sign differs from the cull mode (1023.z).
             const uint32_t cull = word(v, 1023, 2) & 0xFFFFu;
             const float kz = lane(v, 1014, 2);
-            std::vector<std::array<float, 2>> P(count);
+            static std::vector<std::array<float, 2>> P;
+            P.resize(count);
             for (uint32_t j = 0; j < count; ++j)
             {
                 const uint32_t q = base + 4u * j;
@@ -785,7 +770,8 @@ namespace shino::native3d
         // whose corners are outside one plane is rejected, as the variant's clipper does; the others are drawn whole and
         // the GPU clips them (a triangle reaching behind the camera too: the renderer's w).
         const float guardX = lane(v, 1021, 1), guardY = lane(v, 1022, 1), depth0 = lane(v, 1021, 2), depth1 = lane(v, 1022, 2);
-        std::vector<uint8_t> outside(passed);
+        static std::vector<uint8_t> outside;
+        outside.assign(passed, 0);
         for (uint32_t k = 0; kind.clipper && k < passed; ++k)
         {
             const float x = clip[k][0] * guardX, y = clip[k][1] * guardY, w = clip[k][3], aw = std::fabs(w);
@@ -797,7 +783,8 @@ namespace shino::native3d
         uint8_t allOutside = kind.clipper ? 63u : 0u;
         for (uint32_t k = 0; kind.clipper && k < passed; ++k)
             allOutside &= outside[k];
-        std::vector<bozo::render::Vertex> triangles;
+        static std::vector<bozo::render::Vertex> triangles;
+        triangles.clear();
         triangles.reserve(count * 3);
         for (uint32_t k = 2; k < count && !allOutside; k += kind.list ? 3u : 1u)
         {
@@ -943,8 +930,8 @@ namespace shino::native3d
                 g_fastPath &= outside[k] == 0;
             g_last.base = base;
             g_last.count = count;
-            g_last.clip = std::move(clip);
-            g_last.adc = std::move(adc);
+            g_last.clip = clip;
+            g_last.adc = adc;
         }
         if (!submit || triangles.empty())
             return;
@@ -1046,7 +1033,7 @@ namespace shino::native3d
         ++st.batches;
         st.vertices += itop;
         // The setup in place: positions (skinned, morphed), UVs, colours (lit), normals, as the VU's leaves the buffer
-        SetupOut s;
+        static SetupOut s; // (kept: no allocation a batch)
         nativeSetup(v.data, top, itop, s, r->characters, r->uvTransform);
         for (uint32_t k = 0; k < s.position.size(); ++k) // (the batch rounded up to four vertices)
         {
