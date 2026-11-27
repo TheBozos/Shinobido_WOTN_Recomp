@@ -48,6 +48,10 @@ namespace shino::native3d
     // A program starting at pc (bytes) with its batch at TOP (top), ITOP (itop) vertices: made here (drawn when
     // submit) when it is a native object's; false when the VU must run it.
     bool programNative(vu::Unit &v, uint32_t pc, uint32_t top, uint32_t itop, bool submit);
+    // The 2D program of set 0x4f3f60 (its screen-space triangles) made here whole, drawn when submit: false when not it.
+    bool screenProgram(vu::Unit &v, uint32_t pc, uint32_t top, uint32_t itop, bool submit);
+    // Verify: the VU having run it, its packets against the ones built here.
+    void compareScreen(const vu::Unit &v, uint32_t top, uint32_t itop);
     // Verify: the VU having run the program, its VU1 memory (the inputs and constants) against native's.
     void compareObject(const vu::Unit &v, const uint8_t *native);
     // A program of a renderer drawn natively starts: its batch is at TOP (top), ITOP (itop) vertices.

@@ -1203,6 +1203,122 @@ namespace shino::native3d
         st.tpcDiffers += v.tpc != r.program * 8u;
     }
 
+    // ---- 2D: the screen-space triangles of set 0x4f3f60 ----------------------------------------------------------
+    // Its one program (0; the next batches MSCNT at 0x168): ITOP triangles at TOP, three vertices of four quadwords each
+    // (the screen point xy and z, S T Q, the colour); each goes out as a packet of its own, the tag of 1018 (NLOOP 3:
+    // a fan of three) and per vertex ST = (s q, t q, q), RGBA = ftoi0(colour x 1019), XYZF2 = ftoi4(xy + 1017.xy, z) with
+    // F 255; the packets at TOP + 192 (1023.w), ended by a tag of NLOOP 0 with EOP, kicked at once.
+    namespace
+    {
+        struct ScreenStats
+        {
+            uint64_t programs = 0, triangles = 0, compared = 0, differs = 0;
+        } g_screen;
+        const vu::Image *screenImage()
+        {
+            static const vu::Image *im = imageOf(0x4f3f60u);
+            return im;
+        }
+        // The packets the program builds, quadword by quadword (its output from TOP + 192), and the draw.
+        void screenTriangles(const vu::Unit &v, uint32_t top, uint32_t count, std::vector<std::array<uint32_t, 4>> &packets,
+                             std::vector<bozo::render::Vertex> &vertices)
+        {
+            packets.clear();
+            vertices.clear();
+            const __m128 material = ldq(v.data, 1019), offset = _mm_setr_ps(lane(v, 1017, 0), lane(v, 1017, 1), 0.0f, 0.0f);
+            std::array<uint32_t, 4> tag;
+            std::memcpy(tag.data(), v.data + 16u * 1018u, 16);
+            tag[0] = 3u; // (MFIR.x 3: NLOOP)
+            for (uint32_t t = 0; t < count; ++t)
+            {
+                packets.push_back(tag);
+                for (uint32_t j = 0; j < 3; ++j)
+                {
+                    const uint32_t q = top + 12u * t + 4u * j;
+                    alignas(16) float p[4], stq[4], c[4];
+                    _mm_store_ps(p, ldq(v.data, q));
+                    _mm_store_ps(stq, ldq(v.data, q + 1));
+                    _mm_store_ps(c, mul4(ldq(v.data, q + 2), material));
+                    float st[3] = {vu::clampF(stq[0] * stq[2]), vu::clampF(stq[1] * stq[2]), stq[2]};
+                    alignas(16) float xy[4];
+                    _mm_store_ps(xy, cl(_mm_add_ps(_mm_setr_ps(p[0], p[1], 0.0f, 0.0f), offset)));
+                    std::array<uint32_t, 4> stWords{}, rgbaWords{}, xyzWords{};
+                    std::memcpy(stWords.data(), st, 12);
+                    std::memcpy(&stWords[3], v.data + 16u * ((q + 1) & 0x3FFu) + 12u, 4); // (SQ.xyz: w as it was... see verify)
+                    for (int i = 0; i < 4; ++i)
+                        rgbaWords[i] = static_cast<uint32_t>(ftoi(c[i], 1.0f));
+                    xyzWords[0] = static_cast<uint32_t>(ftoi(xy[0], 16.0f));
+                    xyzWords[1] = static_cast<uint32_t>(ftoi(xy[1], 16.0f));
+                    xyzWords[2] = static_cast<uint32_t>(ftoi(p[2], 16.0f));
+                    xyzWords[3] = 4080u; // MFIR.w 4080: F 255
+                    packets.push_back(stWords);
+                    packets.push_back(rgbaWords);
+                    packets.push_back(xyzWords);
+                    // drawn as the GS takes it: the point at 1/16 of a pixel, Z as written, S / Q and T / Q
+                    bozo::render::Vertex out;
+                    out.x = float(static_cast<int32_t>(xyzWords[0] & 0xFFFFu)) / 16.0f;
+                    out.y = float(static_cast<int32_t>(xyzWords[1] & 0xFFFFu)) / 16.0f;
+                    out.z = float(xyzWords[2]);
+                    out.u = st[2] != 0.0f ? st[0] / st[2] : st[0];
+                    out.v = st[2] != 0.0f ? st[1] / st[2] : st[1];
+                    out.rgba = (rgbaWords[0] & 0xFFu) | (rgbaWords[1] & 0xFFu) << 8 | (rgbaWords[2] & 0xFFu) << 16 | (rgbaWords[3] & 0xFFu) << 24;
+                    out.fog = 1.0f;
+                    out.q = 1.0f;
+                    vertices.push_back(out);
+                }
+            }
+        }
+    }
+
+    bool screenProgram(vu::Unit &v, uint32_t pc, uint32_t top, uint32_t itop, bool submit)
+    {
+        const vu::Image *im = screenImage();
+        if (!im || v.vu0 || (pc != 0 && pc != 0x168u) || im->start != 0 || im->count < 46)
+            return false;
+        for (const uint32_t p : {0u, 11u, 45u}) // the program (its entry, its loop, the continuation) loaded
+            if (v.micro[2 * p] != im->code[2 * p] || v.micro[2 * p + 1] != im->code[2 * p + 1])
+                return false;
+        ++g_screen.programs;
+        v.tpc = 0x168u; // as it ends (E at 0x158): the next batch an MSCNT
+        if (itop == 0)
+            return true; // (no triangle: nothing kicked)
+        const uint32_t out = (top + 192u) & 0xFFFFu;
+        std::memcpy(v.data + 16u * 1023u + 12u, &out, 4); // ISW.w vi11, 1023
+        static std::vector<std::array<uint32_t, 4>> packets;
+        static std::vector<bozo::render::Vertex> vertices;
+        screenTriangles(v, top, itop, packets, vertices);
+        g_screen.triangles += itop;
+        if (submit)
+        {
+            const uint32_t tag1 = word(v, 1018, 1);
+            const uint64_t prim = (tag1 >> 14) & 1u ? uint64_t((tag1 >> 15) & 0x7FFu) : ~0ull;
+            static const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+            gs::nativeTriangles(prim, identity, vertices.data(), static_cast<uint32_t>(vertices.size()));
+        }
+        return true;
+    }
+
+    void compareScreen(const vu::Unit &v, uint32_t top, uint32_t itop)
+    {
+        // The VU's packets (TOP + 192 on) against the ones built here: every word but ST's w (SQ.xyz leaves it as it was)
+        static std::vector<std::array<uint32_t, 4>> packets;
+        static std::vector<bozo::render::Vertex> vertices;
+        screenTriangles(v, top, itop, packets, vertices);
+        ++g_screen.compared;
+        uint32_t words = 0;
+        for (size_t k = 0; k < packets.size(); ++k)
+            for (int i = 0; i < 4; ++i)
+            {
+                if (k % 10 != 0 && (k % 10) % 3 == 1 && i == 3) // (ST at 1, 4, 7 of each triangle's ten)
+                    continue;
+                uint32_t vu;
+                std::memcpy(&vu, v.data + 16u * ((top + 192u + k) & 0x3FFu) + 4u * i, 4);
+                if (vu != packets[k][i] && ++words <= 3 && g_screen.differs < 6)
+                    std::printf("[shino:native2d] packet quadword %zu.%c: native %08x, the VU's %08x%c", k, "xyzw"[i], packets[k][i], vu, 10);
+            }
+        g_screen.differs += words != 0;
+    }
+
     void programStart(const vu::Unit &v, uint32_t top, uint32_t itop)
     {
         g_rawValid = mode() == Mode::Verify && objectRenderer(g_packet) != nullptr;
@@ -1418,6 +1534,11 @@ namespace shino::native3d
                 std::printf("; %s programs compared %llu: memory differs in %llu (%llu words), TPC in %llu", name, (unsigned long long)o.compared,
                             (unsigned long long)o.differs, (unsigned long long)o.words, (unsigned long long)o.tpcDiffers);
         }
+        if (g_screen.programs)
+            std::printf("; 2D (0x4f3f60) %llu programs, %llu triangles natively", (unsigned long long)g_screen.programs,
+                        (unsigned long long)g_screen.triangles);
+        if (g_screen.compared)
+            std::printf("; 2D packets compared %llu: %llu differ", (unsigned long long)g_screen.compared, (unsigned long long)g_screen.differs);
         if (g_replayStats.batches)
             std::printf("; replayed %llu batches: strips %llu (%llu drawn natively, %llu not the batch's on the screen), %llu other packets",
                         (unsigned long long)g_replayStats.batches, (unsigned long long)g_replayStats.strips,

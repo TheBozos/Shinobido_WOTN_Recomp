@@ -1113,6 +1113,23 @@ namespace shino
             const uint8_t *stops = !v.vu0 && !g_traceThis && !verifying && !vuDiagnostic && nativeMode != native3d::Mode::Off && compiledOn()
                                        ? native3d::takeOverAt(v)
                                        : nullptr;
+            // The 2D program (set 0x4f3f60) made natively; verify (SHINO_NATIVE_3D=verify): the VU's run, its packets compared.
+            if (!v.vu0 && !g_traceThis && !verifying && !vuDiagnostic && nativeMode != native3d::Mode::Off && compiledOn())
+            {
+                const uint32_t top = g_cv->top, itop = g_cv->itop;
+                if (nativeMode == native3d::Mode::Verify)
+                {
+                    if (native3d::screenProgram(v, pc, top, itop, false))
+                    {
+                        compiledFrom(pc);
+                        if (itop)
+                            native3d::compareScreen(v, top, itop);
+                        return;
+                    }
+                }
+                else if (native3d::screenProgram(v, pc, top, itop, true))
+                    return;
+            }
             static std::vector<uint8_t> objectBefore, objectNative;
             bool compareObject = false;
             if (stops && native3d::objectsMode() == 1 && native3d::programNative(v, pc, g_cv->top, g_cv->itop, true))

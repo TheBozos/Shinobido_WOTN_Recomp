@@ -371,6 +371,21 @@ objects). The VU diagnostics that rerun each program (`SHINO_VU_JUMPS`, `SHINO_V
 program trace keep the VU path. The town headless: 133.6 flips a second against 113.5 with it off (VU1 0.01M pairs a
 flip against 1.69M).
 
+## 2D: the screen-space triangles (2026-11-27)
+
+What still went through the GS translator, by path (a count of the primitives each sent, the town and the final
+fight): set `0x4f3f60` (a 47-pair VU1 program: about 64 triangles a frame), VIF1 DIRECT (PATH2: about 32 primitives a
+frame, packets the EE builds), and set `0x601710`'s sprites (the fight's particles); PATH3 sends none.
+
+Set `0x4f3f60` is a screen-space triangle program: ITOP triangles at TOP, three vertices of four quadwords (the screen
+point xy and z, S T Q, the colour); each triangle goes out as a packet of its own (1018's tag, NLOOP 3, a fan of three:
+textured, Gouraud, blended), ST = (s q, t q, q), RGBA = ftoi0(colour x 1019), XYZF2 = ftoi4(xy + 1017.xy, z) with F
+255, the packets at TOP + 192 (1023.w), kicked at once; the next batches by MSCNT at `0x168`. Natively
+(`native3d::screenProgram`): the triangles drawn in GS screen space (the point at 1/16 of a pixel, S / Q, T / Q), no
+VU code run; 1023.w and TPC left as the program leaves them. Verify builds the packets here and compares them with the
+VU's, every word but ST's unused w: the town (11,571 programs) and the fight (10,197), none different; the HUD (the
+health bar, the eye, the compass) the same on the screen.
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter
