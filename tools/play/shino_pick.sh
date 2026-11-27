@@ -3,7 +3,7 @@
 # prints the chosen k (1-based, after News), the offers and the titles; "0" when none is offered.
 # Only the rows on screen have their titles in memory, so: one RAM dump as the list opens, then one after each of 12
 # Downs and 12 Ups (each scroll step draws one new row, whose title is the string that changed).
-cd /d/Shinobido_WOTN_Recomp
+cd "$(dirname "$0")/../.." || exit 1
 S=$1; F=$2; L=$((F+700))
 DUMPS=$L
 for k in $(seq 1 24); do DUMPS="$DUMPS,$((L+50*k+40))"; done

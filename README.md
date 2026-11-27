@@ -143,6 +143,30 @@ still hear him and go to look), a teleport (to a point, forward, back or up from
 mission's goal, the item to take or the nearest enemy) and four saved positions to go back to. Without a window:
 `SHINO_CHEAT_HEALTH=1`, `SHINO_CHEAT_KILLS=1`, `SHINO_CHEAT_UNSEEN=1`, `SHINO_TELEPORT=<x>,<y>,<z>`.
 
+### Scripted play
+
+How the port was played to its ending: runs driven by scripts, from save states, without a hand on the pad. Add
+`--hidden` to run the window build without showing it, `--mute` for no sound.
+
+- **Pad scripts:** `--pad-script FILE`, a comma-separated list of `<frame>:<BUTTON>/<frames held>` keyed on game
+  frames (`5300:CROSS/4,5420:START/4`; `UP DOWN LEFT RIGHT CROSS CIRCLE SQUARE TRIANGLE START SELECT L1 R1 L2 R2 L3 R3`).
+- **Timed teleports:** `SHINO_TELEPORT_AT="<frame>:<what>;..."`, where `<what>` is `x,y,z`, `goal`, `item`, `enemy`
+  (behind the nearest), `char<n>` (behind character n) or `done` (the mission's goals marked complete).
+- **The rival ninja:** `SHINO_ANSWER_DANGER=1` answers "I sense danger... Continue anyway?" with Yes and fights him.
+- **Captures:** `PS2X_CAPTURE_SCENE=1 PS2X_CAPTURE_WINDOW_DIR=DIR SHINO_CAPTURE_FRAMES=<frame>,<first>:<last>:<step>`
+  writes the window's picture at those frames as `DIR/frame_<n>.png`; `tools/play/shino_sheet.py DIR out.png` makes a
+  contact sheet of them.
+- **Missions:** `tools/play/shino_cycle.sh <state> <frame> <k> <out.state> [mode]` plays one Hideout day from a save
+  state at the Hideout: accepts the k-th mission of the list, completes it (`done` marks its goals done, `kill` runs
+  the kill loop, `mixed`, `drop`, `thief`, `goal`, `garden`: see the script's header), passes the rating and saves the
+  next Hideout state. `tools/play/shino_pick.sh <state> <frame>` reads the day's offers and picks one;
+  `tools/play/shino_chain.sh` runs cycles one after another. Captures go to `build/cyc/<name>/`.
+
+Speed: `SHINO_PROFILE=1` prints where each frame's time goes (the recompiled code, VU0, VU1, the GS translator, VIF,
+uploads); `SHINO_SAMPLE=<first flip>:<last flip>` samples the game thread into `build/samples.txt`, and
+`tools/shino_samples.py build/bozo/shinobido.exe` names the functions. `SHINO_VU_VERIFY=1` runs every VU program both
+compiled and interpreted and reports any difference. [docs/RECOMP_NOTES.md](docs/RECOMP_NOTES.md) has the rest.
+
 ### Windows
 
 The same scripts run in an MSYS2 **UCRT64** shell, with MSYS2's GCC (MSVC is not supported for this port).

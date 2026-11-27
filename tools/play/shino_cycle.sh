@@ -8,7 +8,7 @@
 # printed at the end: Ichijo's, Akame's and Sadame's, the words at 0x6264e8, 0x6265a8 and 0x626668 (percent).
 set -u
 IN=$1; F=$2; K=$3; OUT=$4; MODE=${5:-done}
-cd /d/Shinobido_WOTN_Recomp
+cd "$(dirname "$0")/../.." || exit 1
 NAME=$(basename "$OUT" .state)
 DIR=build/cyc/$NAME; rm -rf "$DIR"; mkdir -p "$DIR"
 python - "$F" "$K" "$MODE" "$DIR" "${LETTERS:-0}" <<'EOF'

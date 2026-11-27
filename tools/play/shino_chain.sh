@@ -2,7 +2,7 @@
 # chain.sh <start state> <start frame> <first number> <count> [k]: cycle.sh repeated, each from the last one's state.
 # States build/<PREFIX><n>.state (PREFIX h by default); k best picks with shino_pick.sh (LORD=<n>: serve that lord;
 # PICK_MODE=auto: the way to play from the title). STOP_ON_DEATH=1 stops when a lord's respect falls to 0 (his death).
-cd /d/Shinobido_WOTN_Recomp
+cd "$(dirname "$0")/../.." || exit 1
 S=$1; F=$2; N=$3; C=$4; K=${5:-1}
 for ((i=0;i<C;i++)); do
   OUT=build/${PREFIX:-h}$((N+i)).state

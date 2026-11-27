@@ -1,5 +1,6 @@
 """review.py <first> <last> <out.png>: per cycle h<n>, its mission list (first capture) and three later captures."""
 import glob
+import os
 import sys
 
 from PIL import Image
@@ -7,7 +8,7 @@ from PIL import Image
 first, last, out = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
 rows = []
 for n in range(first, last + 1):
-    fs = sorted(glob.glob(f'D:/Shinobido_WOTN_Recomp/build/cyc/h{n}/frame_*.png'))
+    fs = sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'build', 'cyc', f'h{n}', 'frame_*.png')))
     if not fs:
         continue
     pick = [fs[0], fs[len(fs) // 4], fs[len(fs) // 2], fs[-1]]
