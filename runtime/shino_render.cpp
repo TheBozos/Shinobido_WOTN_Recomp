@@ -56,6 +56,13 @@ namespace shino
                 const uint64_t tag = rd64(tadr);
                 const uint32_t qwc = static_cast<uint32_t>(tag & 0xFFFFu), id = static_cast<uint32_t>(tag >> 28) & 7u;
                 const uint32_t addr = static_cast<uint32_t>(tag >> 32) & 0x7FFFFFF0u;
+                // SHINO_TRACE_DMA=<flip>: each tag of that flip's chains (where the data is: refs in place, cnts inline)
+                if (static const long long traceFlip = std::getenv("SHINO_TRACE_DMA") ? std::atoll(std::getenv("SHINO_TRACE_DMA")) : -1;
+                    traceFlip >= 0 && gs::flips() == static_cast<uint64_t>(traceFlip))
+                {
+                    static const char *const kIds[8] = {"refe", "cnt", "next", "ref", "refs", "call", "ret", "end"};
+                    std::printf("[shino:dma] %08x %-4s qwc %4u addr %08x%c", tadr, kIds[id], qwc, addr, 10);
+                }
                 if (tte)
                     take(ptr(tadr + 8), 8u, true);
                 switch (id)
