@@ -405,6 +405,22 @@ chunks); the GS translator's checksum the same with the 2D native and on the VU 
 fight, flips 250 and 500. A mission day: 944,541 HUD programs (1.91M triangles) and 25,930 particles natively, no
 fault. What is left on the GS translator: the screen clears (VIF1 DIRECT) and set `0x59d290`'s 520.
 
+## Widescreen, first step (2026-11-27)
+
+The Video tab's Widescreen (BozoEngine's `video::Settings::widescreen`; `PS2X_WIDESCREEN`, or `SHINO_WIDESCREEN=1` for a
+hidden run) now works for a shown window: the port loads the player's video settings (`video::loadAtStartup`, the
+command line's `--fullscreen` over them; a hidden scripted run keeps the window's defaults), offers widescreen, and
+draws its views Hor+: the native 3D (`gs::nativeTriangles`: the matrix's x 3/4 as wide around the screen's centre) and
+the particles 3/4 as wide around the centre, the HUD's triangles each towards its third of the screen (the left edge,
+the centre or the right edge: its own shape kept), and the window shows the picture 16:9
+(`video::setPictureAspect`). Only a frame that drew 3D is widened, from the frame after (the movies and the menus'
+pictures stay 4:3; a frame is shown 16:9 only when it was drawn so).
+
+What it lacks: the game culls its objects for its own 4:3 view, so at the new sides walls and ground pieces are missing.
+Widening the game's own projection would widen its culling too; the camera's view-projection is only found in the DMA
+packets it builds (never stored in RAM; likely made in the scratchpad), and its horizontal scale (0.901: a 70 degree
+view) is not a value stored anywhere either: the camera code is still to read.
+
 ## The plan
 
 1. **Read what each vertex program computes**, variant by variant, from the recompiled code and the interpreter

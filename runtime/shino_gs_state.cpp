@@ -1108,13 +1108,23 @@ namespace shino::gs
     void imageFlush();
     void imageQuadword(const uint8_t *quadword);
 
-    void screenPrimitives(uint64_t prim, const ScreenVertex *vertices, uint32_t count)
+    bool (*widescreenWanted)() = nullptr;
+    void (*widescreenShown)(bool) = nullptr;
+    namespace
+    {
+        float g_wide = 1.0f;       // this frame's horizontal scale (3/4 while widescreen)
+        bool g_frameHad3D = false; // a native 3D draw this frame
+        float frameWidth(const Context &c) { return float(((c.frame >> 16) & 0x3Fu) * 64u); }
+    }
+
+    void screenPrimitives(uint64_t prim, const ScreenVertex *vertices, uint32_t count, Place place)
     {
         writeRegister(0x00, prim);
         const uint64_t attrs = (g_s.prmodecont & 1u) ? g_s.prim : (g_s.prmode & ~7ull) | (g_s.prim & 7u);
         const Context &c = g_s.ctx[(attrs >> 9) & 1u];
         const uint32_t type = attrs & 7u;
         static const uint32_t need[8] = {1, 2, 2, 3, 3, 3, 2, 1};
+        const float width = frameWidth(c), k = g_wide;
         GsVertex g[3];
         for (uint32_t i = 0; i + need[type] <= count; i += need[type])
         {
@@ -1130,6 +1140,20 @@ namespace shino::gs
                 v.q = w.q;
                 v.u = w.s;
                 v.v = w.t;
+            }
+            if (k != 1.0f && width > 0.0f) // widescreen: 3/4 as wide, around the centre or towards the HUD's own edge
+            {
+                float anchor = width * 0.5f;
+                if (place == Place::Hud)
+                {
+                    float centre = 0.0f;
+                    for (uint32_t j = 0; j < need[type]; ++j)
+                        centre += g[j].x;
+                    centre /= float(need[type]);
+                    anchor = centre < width / 3.0f ? 0.0f : centre > width * 2.0f / 3.0f ? width : width * 0.5f;
+                }
+                for (uint32_t j = 0; j < need[type]; ++j)
+                    g[j].x = anchor + (g[j].x - anchor) * k;
             }
             if (!vertices[i + need[type] - 1].adc)
                 emit(g, need[type], type, attrs);
@@ -1161,6 +1185,10 @@ namespace shino::gs
             m[4 * col + 0] -= ox * m[4 * col + 3];
             m[4 * col + 1] -= oy * m[4 * col + 3];
         }
+        g_frameHad3D = true;
+        if (const float width = frameWidth(c); g_wide != 1.0f && width > 0.0f) // widescreen: 3/4 as wide around the centre
+            for (int col = 0; col < 4; ++col)
+                m[4 * col + 0] = g_wide * m[4 * col + 0] + (1.0f - g_wide) * width * 0.5f * m[4 * col + 3];
         Batch *into = nullptr, *alsoInto = nullptr;
         if (!targetFor(make, into, alsoInto, &m))
             return;
@@ -1467,6 +1495,16 @@ namespace shino::gs
     void flip(Runtime *rt, R5900Context *ctx, uint64_t dispfb, uint64_t display)
     {
         ++g_flips;
+        // Widescreen: this frame shown 16:9 when it was drawn so; the next drawn so when it is wanted and this one drew
+        // 3D (the game's views: movies and the menus' pictures stay 4:3, their first frame after 3D too)
+        {
+            static const bool fromEnvironment = std::getenv("SHINO_WIDESCREEN") && *std::getenv("SHINO_WIDESCREEN") == '1';
+            const bool wanted = fromEnvironment || (widescreenWanted && widescreenWanted());
+            if (widescreenShown)
+                widescreenShown(g_wide != 1.0f);
+            g_wide = wanted && g_frameHad3D ? 0.75f : 1.0f;
+            g_frameHad3D = false;
+        }
         auto &renderer = bozo::render::Renderer::instance();
         const uint32_t fbp = dispfb & 0x1FFu;
         g_displayFbp = fbp;

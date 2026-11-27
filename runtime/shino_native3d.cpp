@@ -1298,7 +1298,7 @@ namespace shino::native3d
         const uint32_t end = 0x8000u;
         std::memcpy(v.data + 16u * ((out + packets.size()) & 0x3FFu), &end, 4);
         if (submit)
-            gs::screenPrimitives(word(v, 1018, 1) >> 15 & 0x7FFu, vertices.data(), static_cast<uint32_t>(vertices.size()));
+            gs::screenPrimitives(word(v, 1018, 1) >> 15 & 0x7FFu, vertices.data(), static_cast<uint32_t>(vertices.size()), gs::Place::Hud);
         return true;
     }
 

@@ -7,6 +7,7 @@
 #include "bozo/host/free_host.h"
 #include "bozo/port.h"
 #include "shino_cheats.h"
+#include "shino_gs.h"
 #include "shino_functions.h"
 #include "shino_port.h"
 #include <algorithm>
@@ -20,6 +21,7 @@
 #include "bozo/app/app.h"
 #include "bozo/app/audio_device.h"
 #include "bozo/app/device_pad.h"
+#include "bozo/app/video_settings.h"
 #include "bozo/app/window.h"
 #endif
 
@@ -200,6 +202,18 @@ int main(int argc, char **argv)
             return a == "--help" ? 0 : 2;
         }
     }
+#ifdef SHINO_WITH_WINDOW
+    // The player's video settings (video.ini and the Video tab: the size, mode, render scale, widescreen ...; PS2X_*
+    // over them) for a run shown; a hidden (scripted) run keeps the window's defaults, its captures the same size.
+    bozo::app::video::offerWidescreen(true);
+    if (!windowOptions.hidden)
+    {
+        bozo::app::video::loadAtStartup(windowOptions.width, windowOptions.height);
+        if (windowOptions.fullscreen)
+            bozo::app::video::edited().mode = bozo::app::video::WindowMode::Borderless;
+        windowOptions.videoSettings = true;
+    }
+#endif
     // SHINO_REAL_TIME=0: a window run on the EE clock alone (nothing host-timed: the same frames as headless), for
     // captures to compare between builds or modes.
     options.realTime = window && !(std::getenv("SHINO_REAL_TIME") && *std::getenv("SHINO_REAL_TIME") == '0');
@@ -510,6 +524,9 @@ int main(int argc, char **argv)
         game.loadState = [&](int slot) { host.requestLoad(bozo::app::stateSlotPath(slot)); };
         host.onStateMessage = [](bool, const std::string &message) { bozo::app::notify(message); };
         shino::cheats::registerMenu(); // the Cheats tab (F2)
+        // Widescreen (the Video tab's, PS2X_WIDESCREEN): the views widened and the picture shown 16:9 (shino_gs_state.cpp)
+        shino::gs::widescreenWanted = [] { return bozo::app::video::shared().applied.widescreen; };
+        shino::gs::widescreenShown = [](bool wide) { bozo::app::setPictureAspect(wide ? 16.0f / 9.0f : 0.0f); };
         result = bozo::app::runWindow(windowOptions, game, &devices);
     }
     else

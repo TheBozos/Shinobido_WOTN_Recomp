@@ -23,7 +23,19 @@ namespace shino::gs
         float s = 0, t = 0, q = 1;
         bool adc = false;
     };
-    void screenPrimitives(uint64_t prim, const ScreenVertex *vertices, uint32_t count);
+    // Widescreen (Hor+): the picture shown at 16:9, the game's views drawn 3/4 as wide around the screen's centre so
+    // more of them shows at the sides; Screen::Place for the 2D: the particles (in the 3D's place) or the HUD (each
+    // triangle towards its third of the screen: the left edge, the centre or the right edge, its own shape kept).
+    enum class Place
+    {
+        Scene,
+        Hud,
+    };
+    void screenPrimitives(uint64_t prim, const ScreenVertex *vertices, uint32_t count, Place place = Place::Scene);
+    // The window's hooks (window builds): whether widescreen is wanted (the Video tab's setting), and the picture's
+    // shape for the frame flipped (16:9 or the default). SHINO_WIDESCREEN=1 wants it without a window (tests).
+    extern bool (*widescreenWanted)();
+    extern void (*widescreenShown)(bool wide);
     // A GS register written with its raw value (PRIM 0x00 ... LABEL 0x62): A+D, REGLIST, a tag's PRE.
     void writeRegister(uint32_t address, uint64_t value);
     // A PACKED quadword for register descriptor `r` (0x0 PRIM ... 0xe A+D, 0xf NOP).
