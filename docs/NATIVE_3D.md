@@ -115,7 +115,7 @@ lighting; `jr vi12` into the variant). The variant ends `vi15 = 51` and the E bi
 translator's lists as a native batch (`gs::nativeTriangles`: object-space triangles and their matrix to window pixels,
 XYOFFSET folded in, in the frame's order with the other draws, the material and texture of the GS registers and the
 vertex GIF tag's PRIM): positions, lit colours, UVs, the MVP times the screen mapping, fog per vertex (the GS path
-does not draw fog yet: off on both), each triangle's ADC as the variant computes it, and the clipper's decisions:
+did not draw fog then: off on both; drawn since stage 2f), each triangle's ADC as the variant computes it, and the clipper's decisions:
 - all three corners nearer than the near plane (w < 1) or farther than the far one (w > 2500): rejected;
 - all three outside one guard-band plane, every corner in front: rejected (behind the camera a corner's x and y are
   mirrored, so the clipper cuts at the near plane first);
@@ -353,6 +353,15 @@ the fight's busy stretch): the setup did each lane alone with a branching clamp,
 The setup and the clip transform now go four lanes at a time with the VU model's own clamp (the same SSE operations, so
 the same bits: verify and the native checksums unchanged), and the buffers are kept: 3.3 ms, 82.5 flips a second
 there (54.9 before; the GS path 6.2 + 1.5 ms of GS translation).
+
+## Stage 2f: fog (2026-11-27)
+
+Fog is drawn, on both paths: the GS translator's materials take PRIM.FGE (`Material::fog`) and FOGCOL
+(`Material::fogColour`, a key of the material cache when fogged) and its vertices their F (XYZF2's or the FOG
+register's, over 255); the native batches already carried each vertex's F as their variants make it. The renderer mixes
+the colour toward FOGCOL by 1 - F after the texture function, before blending, as the GS does. The town's frame 5300:
+a quarter of the pixels change (the distance hazes into the dark fog colour); the GS path and the native one 0.2% of
+the pixels apart. The draws' checksums (`SHINO_CHECKSUM`) change with it, as the vertices' fog is part of them.
 
 ## The plan
 

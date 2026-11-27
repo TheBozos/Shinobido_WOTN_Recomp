@@ -640,6 +640,10 @@ namespace shino::gs
             m.clampV = ((c.clamp >> 2) & 3u) == 1u;
             m.nearest = ((c.tex1 >> 5) & 1u) == 0u;
             m.useQ = ((attrs >> 4) & 1u) && !((attrs >> 8) & 1u); // textured with STQ
+            // PRIM.FGE: the colour goes toward FOGCOL by 1 - F / 255 (each vertex's F, from XYZF or FOG), after the
+            // texture function and before blending, as the GS does
+            m.fog = (attrs >> 5) & 1u;
+            m.fogColour = m.fog ? static_cast<uint32_t>(g_s.fogcol & 0xFFFFFFu) : 0u;
             return m;
         }
 
@@ -661,6 +665,7 @@ namespace shino::gs
                 r.y = g.y;
                 r.z = float(g.z); // GS Z, larger nearer (Screen::depthMax from ZBUF's format)
                 r.rgba = colour;
+                r.fog = float(g.fog) * (1.0f / 255.0f); // F (drawn when PRIM.FGE is set)
                 if (fst)
                 {
                     r.u = g.u * su;
@@ -706,7 +711,7 @@ namespace shino::gs
         // ZB_ONLY their Z (not the colour), RGB_ONLY their RGB: a second pass with the opposite test.
         struct Made
         {
-            uint64_t in[8] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
+            uint64_t in[9] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
             Material pass, fail;
             bool drawPass = true, twoPass = false;
             uint64_t serial = 0; // even: the pass, odd: the failing pixels
@@ -723,9 +728,10 @@ namespace shino::gs
                 return false; // ZTST NEVER
             const uint32_t fbp = c.frame & 0x1FFu;
             Made &made = g_made;
-            const uint64_t in[8] = {c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf, m.attrs & 0x150u, c.frame};
+            const uint64_t in[9] = {c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf, m.attrs & 0x170u, c.frame,
+                                    (m.attrs & 0x20u) ? g_s.fogcol : 0u}; // (PRIM's TME, FGE, ABE, FST; FOGCOL when fogged)
             bool changed = false;
-            for (int k = 0; k < 8; ++k)
+            for (int k = 0; k < 9; ++k)
                 changed |= in[k] != made.in[k];
             if (changed)
             {
