@@ -303,6 +303,24 @@ int main(int argc, char **argv)
                 std::fflush(trace);
             }
         }
+        // SHINO_TRACE_TIME=1: each frame, the game's clock (its frame timer's vblank count, +0x1c of the struct at
+        // gp-0x6cec, and its step +8 in seconds) and the ninja's position (+0x40): play compared by game time, at 25 and
+        // at 60 frames a second.
+        if (static const bool timeTrace = std::getenv("SHINO_TRACE_TIME") != nullptr; timeTrace)
+        {
+            const uint8_t *ram = d.runtime().memory.ram();
+            auto r32 = [&](uint32_t a) {
+                uint32_t x;
+                std::memcpy(&x, ram + (a & 0x1FFFFFCu), 4);
+                return x;
+            };
+            auto rf = [&](uint32_t a) { return std::bit_cast<float>(r32(a)); };
+            const uint32_t timer = r32(0x0062C770u - 0x6CECu), player = r32(0x625d64u);
+            if (timer >= 0x100000u && timer < 0x1FFFF00u)
+                std::printf("[shino:time] frame %llu clock %u step %.4f player %.2f %.2f %.2f motion %u%c", (unsigned long long)f,
+                            r32(timer + 0x1c), rf(timer + 8), player ? rf(player + 0x40) : 0.0f, player ? rf(player + 0x44) : 0.0f,
+                            player ? rf(player + 0x48) : 0.0f, r32(0x6711b4u), 10);
+        }
         // SHINO_TRACE_PLAYER=<every>[:<address>]: the player's object (or the one at that address) (the pointer at gp-0x6a0c, 0x625d64), its first 8 KB, every n
         // frames into build/player_trace.bin (frame, then the bytes): the search for its fields.
         if (static const char *every = std::getenv("SHINO_TRACE_PLAYER"); every && f % std::max(1ull, std::strtoull(every, nullptr, 10)) == 0)
