@@ -80,9 +80,38 @@ a point light from its position; ...); type 0 ends the list: every vertex colour
 material colour (1019). The colours are per vertex, made before the vertex program runs: a native renderer can make
 them on the CPU the same way.
 
+Without lights (`0x0c30`) each colour is the vertex colour times the material colour, after the morph if any. The
+object's world matrix (976-979) only takes the lights into the object's space: the matrix at 1008-1011 is the whole
+model-view-projection, sent with each object (the ten copies of that block found in RAM, one an object). The setup
+ends `jr vi12` into the variant (`0x0d90` is entry 434's: four quadwords a vertex, position, UV with depth in z,
+colour; the camera rows vf28-vf31, the divide by w, `ftoi4` XYZ and `ftoi0` RGBA, the triangle's normal by
+`opmula / opmsub` for culling).
+
+So at an object's vertex program everything a native draw needs is in VU1 memory: the positions (morphed), the lit
+colours, the UVs, the MVP, the screen mapping (1015, 1017), fog (1021-1022), the vertex GIF tag (1018) and the
+material sent before it.
+
 Still to settle: this lighting loop steps four quadwords a vertex, the mesh decoded above five (that one is likely the
 second set's, the characters'); the vertex variant at pair 1023 itself (transform by 976-979 and the camera, fog,
 clipping, strips and their restarts).
+
+**The screen mapping.** The setup zeroes rows 0-2's z and sets row 3's z to 1, takes 0.5 w off x and y, scales by
+1015 and adds 1016 + 1017: with (x, y, w) the MVP (1008-1011, its quadwords the matrix's columns: x row0 + y row1 +
+z row2 + row3) applied to the position,
+X = 2048 + 512 (x/w - 0.5), Y = 2048 + 512 (y/w - 0.5), Z = -19.67 + 65548 / w. The UVs are slot 1's s and t (STQ =
+s/w, t/w, 1/w), the colour slot 2's after the lighting (`ftoi0`).
+
+**Batches.** An object's first batch is `MSCAL 0` (the setup, then its variant); each next one `MSCAL 0x3968`, whose
+`jr vi15` goes back to the batch's prelude at pair 51 (`xtop vi1`, `xitop vi9`: the batch's buffer and count; the
+lighting; `jr vi12` into the variant). The variant ends `vi15 = 51` and the E bit.
+
+## Stage 1, as built
+
+Native for the batches of set `0x539c40` whose variant is the main one (pair 1023), behind `SHINO_NATIVE_3D=1`:
+the VU program runs its setup and lighting (compiled) and stops at the variant's entry (`Unit::stopAt`, checked where
+the compiled code dispatches a jump); the batch is drawn by `Renderer::draw` from VU1 memory (positions, lit colours,
+UVs, the MVP times the screen mapping above, the material of the GS registers and the vertex GIF tag's PRIM); the
+variant's GS packet is not built.
 
 ## The plan
 
