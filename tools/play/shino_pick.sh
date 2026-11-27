@@ -14,7 +14,7 @@ for b in ('CROSS','TRIANGLE','TRIANGLE','TRIANGLE','CROSS','CROSS'):
     ev.append(f'{f}:{b}/4'); f+=100
 for k in range(1,25): ev.append(f'{L+50*k}:{\"DOWN\" if k<=12 else \"UP\"}/4')
 open('build/cyc/pick_pad.txt','w').write(','.join(ev))"
-SHINO_DUMP_RAM_AT=$DUMPS timeout 1500 build/bozo/shino-headless.exe --card-dir build/cards_test2 --load-state "$S" \
+SHINO_60FPS=0 SHINO_DUMP_RAM_AT=$DUMPS timeout 1500 build/bozo/shino-headless.exe --card-dir build/cards_test2 --load-state "$S" \
   --pad-script build/cyc/pick_pad.txt --frames $((LAST+2)) > /dev/null 2>&1
 FILES=""
 for d in $(echo $DUMPS | tr ',' ' '); do FILES="$FILES build/ram_$d.bin"; done

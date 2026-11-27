@@ -149,7 +149,8 @@ mission's goal, the item to take or the nearest enemy) and four saved positions 
 ### Scripted play
 
 How the port was played to its ending: runs driven by scripts, from save states, without a hand on the pad. Add
-`--hidden` to run the window build without showing it, `--mute` for no sound.
+`--hidden` to run the window build without showing it, `--mute` for no sound. The scripts, states and frame numbers
+below were made at 25 frames a second: run them with `SHINO_60FPS=0` (`tools/play` does).
 
 - **Pad scripts:** `--pad-script FILE`, a comma-separated list of `<frame>:<BUTTON>/<frames held>` keyed on game
   frames (`5300:CROSS/4,5420:START/4`; `UP DOWN LEFT RIGHT CROSS CIRCLE SQUARE TRIANGLE START SELECT L1 R1 L2 R2 L3 R3`).
@@ -177,8 +178,8 @@ for the objects (the batches still drawn natively). `SHINO_NATIVE_3D=verify` and
 the native work with the VU's.
 [docs/NATIVE_3D.md](docs/NATIVE_3D.md) has the details.
 
-60 frames a second: `SHINO_60FPS=1` runs the game at 60 (the console's is 25): the game's own frame timer told so, and
-its jumps and falls kept on the console's path (docs/RECOMP_NOTES.md, "50 and 60 frames a second").
+60 frames a second (the default; the console's is 25): the game's own frame timer told so, and its jumps and falls kept
+on the console's path (docs/RECOMP_NOTES.md, "50 and 60 frames a second"). `SHINO_60FPS=0` runs it at 25.
 
 ### Windows
 

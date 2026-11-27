@@ -811,7 +811,7 @@ handler `0x133dd0` adds 1 a field), +0x20-0x3c the last 8 frames' vblanks and +0
 frame `0x134010` averages the 8 and multiplies by +4. Measured:
 - `SHINO_FRAME_VBLANKS=1` (the frame's minimum forced to 1: a flip every field, 50 a second): the ninja's walk
   1.35 units a frame becomes 0.67, the same distance in the same time; the game keeps up within the field.
-- `SHINO_60FPS=1` (experimental): fields at NTSC's rate (`palConsole` off; a save state's rate set again), a flip every
+- `SHINO_60FPS=1` (then experimental; the default since): fields at NTSC's rate (`palConsole` off; a save state's rate set again), a flip every
   field, the timer's +0 / +4 written as 60 and 1/60 when its constructor has set 50, frames held to 60 a second.
   The walk 0.563 a frame (1.348 x 25/60 expected); after 10 s of game time the ten guards of the frame-5200 state
   within 5 units of where they are at 25 (patrols, AI on the timer); 60.0 frames a second in the window in play.
@@ -845,3 +845,7 @@ frame: at 25 the ninja overshoots before it is seen).
   the logos before the movie are that much shorter (counted partly in frames);
 - the final fight in the window at 60: 60.0 frames a second (8-11 ms of CPU a frame); headless 98 to 123.
 Left: the logos' half second; a save state made at 25 loaded at 60 moves the timer's clock once (its rate set again).
+
+**60 is the default** (2026-11-27): `shino::fps60()` (`runtime/shino_port.cpp`) is on unless `SHINO_60FPS=0`. Pad
+scripts are keyed on frames, so the ones made at 25 (`tools/play`, the save-state play tests) run with
+`SHINO_60FPS=0`.

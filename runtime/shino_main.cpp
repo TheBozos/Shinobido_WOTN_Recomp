@@ -108,9 +108,9 @@ namespace
 int main(int argc, char **argv)
 {
     bozo::host::FreeOptions options;
-    // SHINO_60FPS=1 (experimental): fields at NTSC's rate and a frame every field; the game's frame timer told so
+    // 60 frames a second (shino::fps60: the default; SHINO_60FPS=0 the console's 25): fields at NTSC's rate and a frame every field; the game's frame timer told so
     // (shino_render.cpp, frameTimer60).
-    const bool fps60 = std::getenv("SHINO_60FPS") && *std::getenv("SHINO_60FPS") == '1';
+    const bool fps60 = shino::fps60();
     const uint32_t fieldsPerSecond = fps60 ? 60u : 50u;
     options.framePeriodCycles = 294912000 / fieldsPerSecond; // PAL (VMODE = PAL in SYSTEM.CNF)
     bool window = false;

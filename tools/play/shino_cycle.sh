@@ -83,7 +83,7 @@ KILLS=""; [ "$MODE" != done ] && KILLS="SHINO_CHEAT_KILLS=1"
 # SPARE_LEADERS=<max health>: the kill loop leaves those (a rival clan's leaders) for its last third (drop mode: one of
 # them drops a soul fragment, grabbed at once)
 [ -n "${SPARE_LEADERS:-}" ] && KILLS="$KILLS SHINO_KILL_SPARE=$SPARE_LEADERS@$(( $(cat $DIR/acc.txt) + 1100 + 150*20 ))"
-env $KILLS PS2X_FRAME_CAP=0 PS2X_CAPTURE_SCENE=1 PS2X_CAPTURE_WINDOW_DIR=$DIR SHINO_CAPTURE_FRAMES=$(cat $DIR/caps.txt) \
+env $KILLS SHINO_60FPS=0 PS2X_FRAME_CAP=0 PS2X_CAPTURE_SCENE=1 PS2X_CAPTURE_WINDOW_DIR=$DIR SHINO_CAPTURE_FRAMES=$(cat $DIR/caps.txt) \
   SHINO_DUMP_RAM_AT=$((END-20)) SHINO_ANSWER_DANGER=1 SHINO_TRACE_MISSION_EVENTS=1 SHINO_CHEAT_HEALTH=1 SHINO_CHEAT_UNSEEN=1 SHINO_TELEPORT_AT="$(cat $DIR/tp.txt)" \
   timeout 3500 build/bozo/shinobido.exe --hidden --mute --card-dir build/cards_test2 --load-state "$IN" \
   --pad-script $DIR/pad.txt --save-state "$OUT" --save-state-at $((END-10)) --frames $END > $DIR/run.txt 2>&1

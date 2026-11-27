@@ -24,6 +24,9 @@ namespace shino
     // The mission flow's state (0x180470's +0xc, runtime/shino_port.cpp): 1 in play, 12 over, 13 "I sense danger...
     // Continue anyway?" (a rival ninja after the mission: the Mosu hold a soul fragment), 0 before any mission.
     uint32_t missionFlowState();
+    // The game at 60 frames a second (the default; SHINO_60FPS=0: the console's 25): fields at NTSC's rate, a frame every
+    // field, the game's frame timer told so, the characters' gravity on the console's path (docs/RECOMP_NOTES.md).
+    bool fps60();
     // A VIF0 source chain (TTE: its tags' VIF codes too), its codes read into the port's VU0 (vif::codes0).
     void vif0Chain(uint8_t *rdram, Runtime *rt, uint32_t tadr);
 

@@ -74,7 +74,7 @@ namespace shino
             constexpr float kConsoleStep = 0.04f;
             // only when the port runs the game at another rate than the console's (SHINO_60FPS, SHINO_FRAME_VBLANKS): at
             // 25 frames a second the game's own steps, slow frames' longer ones included, as on the console
-            static const bool otherRate = (std::getenv("SHINO_60FPS") && *std::getenv("SHINO_60FPS") == '1') ||
+            static const bool otherRate = fps60() ||
                                           (std::getenv("SHINO_FRAME_VBLANKS") && std::atoi(std::getenv("SHINO_FRAME_VBLANKS")) == 1);
             const float h = ctx->f[20];
             if (!otherRate || !(h > 0.0f) || std::fabs(h - kConsoleStep) < 1e-6f)
@@ -259,6 +259,12 @@ namespace shino
     } // namespace
 
     uint32_t missionFlowState() { return g_missionFlowState.load(); }
+
+    bool fps60()
+    {
+        static const bool on = !(std::getenv("SHINO_60FPS") && *std::getenv("SHINO_60FPS") == '0');
+        return on;
+    }
 
     void reportWait()
     {

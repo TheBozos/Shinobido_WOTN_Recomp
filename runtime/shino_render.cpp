@@ -265,9 +265,9 @@ namespace shino
             const uint32_t caller = ctx->r[31].uw[0];
             ctx->r[2].ud[0] = 0;
             // SHINO_FRAME_VBLANKS=<n>: the frame's minimum forced (the game sets 2 at boot, 0x1082ac): 1 flips every field.
-            // SHINO_60FPS=1: 1, and the game's frame timer (its struct at gp-0x6cec: +0 the vblanks a second, 50 from its
+            // 60 frames a second (shino::fps60, the default): 1, and the game's frame timer (its struct at gp-0x6cec: +0 the vblanks a second, 50 from its
             // constructor 0x133df0, +4 a vblank's seconds) told that a vblank is 1/60 s.
-            static const bool fps60 = std::getenv("SHINO_60FPS") && *std::getenv("SHINO_60FPS") == '1';
+            static const bool fps60 = shino::fps60();
             if (static const int forced = fps60 ? 1 : std::getenv("SHINO_FRAME_VBLANKS") ? std::atoi(std::getenv("SHINO_FRAME_VBLANKS")) : 0;
                 forced > 0 && forced < 0xFF)
                 wr8(kVblanksPerFrame, static_cast<uint8_t>(forced));
