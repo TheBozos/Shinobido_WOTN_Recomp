@@ -38,6 +38,7 @@ namespace shino::native3d
             bool replay = false; // the variant run (its kicks held), then its packets replayed: strips drawn natively
             bool list = false;   // a clipper's triangle list (three vertices a triangle) rather than strips
             bool twoPass = false; // set 0x599510's 657: the strip again with an environment map (see batch())
+            bool ortho = false;   // set 0x59d290's 520: the rows applied as they are, no divide by w (see batch())
         };
         constexpr Kind kKinds[] = {
             {0x539c30u, 1023u, 0x72du, true},  // the main renderer (next batches: MSCNT at 0x3968), flags 0xa / 0xb
@@ -54,9 +55,9 @@ namespace shino::native3d
             {0x5e7cd0u, 1134u, 0x79cu, true},              // = 1113
             // Set 0x599510 (the characters' code, its own variant table): 657 is 644 and the strip again, environment-mapped
             {0x599510u, 657u, 0x74du, false, false, false, true},
-            // Replayed: the variant's own GS packets, each strip drawn natively from the batch's positions (four quadwords a
-            // vertex at vi1) where its vertices are the batch's own on the screen, the other packets as they are.
-            {0x59d290u, 520u, 0x5f1u, false, true},  // set 0x59d290 (MSCAL 0x2f88)
+            // Set 0x59d290 (MSCAL 0x2f88): 520 is 657's two passes (the same subroutine, 0x30d8) of a strip made without
+            // the divide by w
+            {0x59d290u, 520u, 0x5f1u, false, false, false, true, true},
         };
         constexpr uint32_t kKindCount = sizeof(kKinds) / sizeof(kKinds[0]);
         uint32_t g_kind = 0;   // the kind of the batch drawn last
@@ -379,6 +380,10 @@ namespace shino::native3d
             uint64_t compared = 0, flagDiffers = 0, positionDiffers = 0;
             double positionError = 0.0;
         } g_stats;
+        struct OrthoStats // set 0x59d290's 520 alone (verify: its batches' packets compared, those that differ)
+        {
+            uint64_t batches = 0, compared = 0, vertices = 0, differs = 0;
+        } g_ortho;
 
         // A GS vertex as a variant's packet holds it (PACKED ST, RGBAQ, XYZF2).
         struct Out
@@ -695,6 +700,31 @@ namespace shino::native3d
         }
         // Fog (1014.zw): F = scale x (w - far), from 0 to 255.
         const float fogScale = lane(v, 1014, 2), fogFar = lane(v, 1014, 3);
+        // Set 0x59d290's 520 (its setup at 0, the variant at 0x1040): vf24-vf26 the rows 1008-1010 times the screen
+        // scale (1015) in x y z, their w times 1014.z; vf27 row 3: x and y less 0.5 times the scale, plus 1016 + 1017
+        // (x y) or 1016 (z), its w (1011.w kz) - 1014.w kz. A vertex's x y z are the GS's (no divide), its w the fog.
+        __m128 orow[4] = {};
+        if (kind.ortho)
+        {
+            const float kz = lane(v, 1014, 2);
+            for (uint32_t c = 0; c < 3; ++c)
+                orow[c] = _mm_setr_ps(vu::clampF(lane(v, 1008 + c, 0) * sx), vu::clampF(lane(v, 1008 + c, 1) * sy),
+                                      vu::clampF(lane(v, 1008 + c, 2) * sz), vu::clampF(lane(v, 1008 + c, 3) * kz));
+            const float tx = vu::clampF(vu::clampF(lane(v, 1011, 0) - 0.5f) * sx), ty = vu::clampF(vu::clampF(lane(v, 1011, 1) - 0.5f) * sy);
+            const float tz = vu::clampF(lane(v, 1011, 2) * sz);
+            orow[3] = _mm_setr_ps(vu::clampF(tx + vu::clampF(lane(v, 1016, 0) + lane(v, 1017, 0))),
+                                  vu::clampF(ty + vu::clampF(lane(v, 1016, 1) + lane(v, 1017, 1))), vu::clampF(tz + lane(v, 1016, 2)),
+                                  vu::clampF(vu::clampF(lane(v, 1011, 3) * kz) - vu::clampF(lane(v, 1014, 3) * kz)));
+            for (uint32_t c = 0; c < 4; ++c)
+            {
+                alignas(16) float r[4];
+                _mm_store_ps(r, orow[c]);
+                matrix[4 * c + 0] = r[0];
+                matrix[4 * c + 1] = r[1];
+                matrix[4 * c + 2] = r[2];
+                matrix[4 * c + 3] = c == 3 ? 1.0f : 0.0f;
+            }
+        }
         // The facing test's cull mode (1023.z): ADC = (mode + 0x7fe0 | 0x7fe0) + 32 if the determinant is negative, plus
         // 0x8000 on odd triangles (a strip's winding), its bit 15.
         const uint16_t mode7 = static_cast<uint16_t>((static_cast<uint16_t>(word(v, 1023, 2)) + 0x7FE0u) | 0x7FE0u);
@@ -713,7 +743,8 @@ namespace shino::native3d
         // The rows with z = w (lane 2 takes lane 3's), as the variant's vf24 and vf28-vf30
         const __m128 rz[4] = {_mm_setr_ps(row[0][0], row[0][1], row[0][3], row[0][3]), _mm_setr_ps(row[1][0], row[1][1], row[1][3], row[1][3]),
                               _mm_setr_ps(row[2][0], row[2][1], row[2][3], row[2][3]), _mm_setr_ps(row[3][0], row[3][1], row[3][3], row[3][3])};
-        const __m128 r3c = cl(rz[3]);
+        const __m128 r3c = kind.ortho ? cl(orow[3]) : cl(rz[3]);
+        const __m128 r0 = kind.ortho ? orow[0] : rz[0], r1 = kind.ortho ? orow[1] : rz[1], r2 = kind.ortho ? orow[2] : rz[2];
         for (uint32_t k = 0; k < passed; ++k)
         {
             const uint32_t q = base + 4u * k;
@@ -721,7 +752,7 @@ namespace shino::native3d
             const float px = _mm_cvtss_f32(pv), py = lane(v, q, 1), pz = lane(v, q, 2);
             // As the variant does it: ACC = row 3, then + row 0 x, + row 1 y, then + row 2 z, each step clamped as the
             // VU's (no NaN, nothing past the largest finite: what stale vertices past the batch may hold)
-            _mm_storeu_ps(clip[k].data(), madd4(madd4(madd4(r3c, rz[0], bc<0>(pv)), rz[1], bc<1>(pv)), rz[2], bc<2>(pv)));
+            _mm_storeu_ps(clip[k].data(), madd4(madd4(madd4(r3c, r0, bc<0>(pv)), r1, bc<1>(pv)), r2, bc<2>(pv)));
             const std::array<float, 4> &r = clip[k];
             if (k >= count)
                 continue;
@@ -739,8 +770,8 @@ namespace shino::native3d
                 rgba |= (static_cast<uint32_t>(n) & 0xFFu) << (8 * i);
             }
             out.rgba = rgba;
-            float f = fogScale * (r[3] - fogFar);
-            f = std::min(std::max(f, 0.0f), 255.0f);
+            float f = kind.ortho ? r[3] : fogScale * (r[3] - fogFar); // (520's w is the fog already)
+            f = kind.ortho ? std::max(std::min(f, 255.0f), 0.0f) : std::min(std::max(f, 0.0f), 255.0f);
             out.fog = static_cast<float>(static_cast<int32_t>(f)) / 255.0f;
             out.q = 1.0f;
         }
@@ -783,6 +814,11 @@ namespace shino::native3d
             P.resize(count);
             for (uint32_t j = 0; j < count; ++j)
             {
+                if (kind.ortho) // 520: the screen point as it is
+                {
+                    P[j] = {clip[j][0], clip[j][1]};
+                    continue;
+                }
                 const uint32_t q = base + 4u * j;
                 const float px = lane(v, q, 0), py = lane(v, q, 1), pz = lane(v, q, 2);
                 float wk = row[3][3] * kz;
@@ -967,7 +1003,22 @@ namespace shino::native3d
                 f = std::min(std::max(f, 0.0f), 255.0f);
                 o.f = static_cast<uint32_t>(ftoi(f, 16.0f) >> 4) & 0xFFu;
                 o.adc = adc[k] ? 1u : 0u;
-                if (!kind.clipper)
+                if (kind.ortho)
+                {
+                    // 520: STQ = (s, t, 1); XYZ = ftoi4 of the row sums; F the fog (no more than 255, no less than 0),
+                    // with ADC 2048 more (bit 15 of ftoi4)
+                    o.s = bitsOf(lane(v, q + 1, 0));
+                    o.t = bitsOf(lane(v, q + 1, 1));
+                    o.q = bitsOf(1.0f);
+                    o.x = static_cast<uint32_t>(ftoi(clip[k][0], 16.0f)) & 0xFFFFu;
+                    o.y = static_cast<uint32_t>(ftoi(clip[k][1], 16.0f)) & 0xFFFFu;
+                    o.z = static_cast<uint32_t>(ftoi(clip[k][2], 16.0f) >> 4) & 0xFFFFFFu;
+                    const float fw = std::max(std::min(clip[k][3], 255.0f), 0.0f);
+                    const uint32_t word3 = static_cast<uint32_t>(ftoi(adc[k] ? fw + 2048.0f : fw, 16.0f));
+                    o.f = (word3 >> 4) & 0xFFu;
+                    o.adc = (word3 >> 15) & 1u;
+                }
+                else if (!kind.clipper)
                 {
                     // The characters' variant: w by rows scaled by kz (1014.z), Q = kz / that; the fog word
                     // min(max(w, a), b) - a, a = 1014.w kz, b = 255 + a; with ADC 2048.5 more (bit 15 of ftoi4).
@@ -1038,7 +1089,7 @@ namespace shino::native3d
                 wk = wk + (row[0][3] * kz) * px;
                 wk = wk + (row[1][3] * kz) * py;
                 wk = wk + (row[2][3] * kz) * pz;
-                const float Q = kz / wk;
+                const float Q = kind.ortho ? 1.0f : kz / wk; // (520's first strip: Q 1)
                 const SecondPass sp = secondPass(v, q, Q);
                 corner2[k].u = sp.s / Q;
                 corner2[k].v = sp.t / Q;
@@ -1064,9 +1115,13 @@ namespace shino::native3d
     void compare(const vu::Unit &v)
     {
         g_capturing = false;
+        const bool ortho = kKinds[g_kind].ortho;
+        g_ortho.batches += ortho;
         if (g_fastPath && g_kicked.size() == g_last.out.size() && !g_kicked.empty()) // the fast path: a GS vertex a batch vertex
         {
             ++g_out.batches;
+            g_ortho.compared += ortho;
+            g_ortho.vertices += ortho ? g_kicked.size() : 0;
             for (size_t k = 0; k < g_kicked.size(); ++k)
             {
                 const Out &a = g_last.out[k], &b = g_kicked[k];
@@ -1080,6 +1135,7 @@ namespace shino::native3d
                         ++g_out.byField[i];
                         any = true;
                     }
+                g_ortho.differs += ortho && any;
                 if (any && g_out.differs++ < 12)
                     std::printf("[shino:native3d] packet vertex %zu: native st %08x %08x q %08x rgba %08x xy %x %x z %x f %x adc %u; the VU's "
                                 "st %08x %08x q %08x rgba %08x xy %x %x z %x f %x adc %u%c", k, a.s, a.t, a.q, a.rgba, a.x, a.y, a.z, a.f, a.adc,
@@ -1875,6 +1931,9 @@ namespace shino::native3d
                             (unsigned long long)o.differs, (unsigned long long)o.words, (unsigned long long)o.tpcDiffers);
         }
         if (g_screen.programs)
+            if (g_ortho.batches)
+                std::printf("; set 0x59d290's 520 %llu batches, %llu compared (%llu vertices): %llu differ", (unsigned long long)g_ortho.batches,
+                            (unsigned long long)g_ortho.compared, (unsigned long long)g_ortho.vertices, (unsigned long long)g_ortho.differs);
             std::printf("; 2D (0x4f3f60) %llu programs, %llu triangles natively", (unsigned long long)g_screen.programs,
                         (unsigned long long)g_screen.triangles);
         if (g_screen.compared)

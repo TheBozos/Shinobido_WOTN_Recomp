@@ -403,7 +403,31 @@ filed as the GS translator files its own (its sprites, its Q), the GS's register
 Verify (`SHINO_NATIVE_3D=verify`): the particles' packets (every word the VU writes) identical in the fight (1,253
 chunks); the GS translator's checksum the same with the 2D native and on the VU (`SHINO_NATIVE_2D=0`), the town and the
 fight, flips 250 and 500. A mission day: 944,541 HUD programs (1.91M triangles) and 25,930 particles natively, no
-fault. What is left on the GS translator: the screen clears (VIF1 DIRECT) and set `0x59d290`'s 520.
+fault. What is left on the GS translator: the screen clears (VIF1 DIRECT) and set `0x59d290`'s 520 (since made
+native: "Stage 2g").
+
+## Stage 2g: set `0x59d290`'s 520, the radar's needle (2026-11-28)
+
+The last 3D variant on the GS translator: what it draws is the radar's needle (the shiny star in its ring, drawn with
+the radar's own camera; skipping it leaves only that region of the picture different). Its setup runs on the VU as
+before; the variant at pair 520 (byte `0x1040`) is now made natively:
+
+- **No divide by w.** The setup leaves vf28-vf30 the rows 1008-1010 times the screen scale (1015) and vf31 row 1011
+  with 0.5 off its x and y before the scale; the variant adds 1016 + 1017 (x, y) or 1016 (z) to row 3 and applies the
+  rows to the position as they are: x y z are the GS's, Q 1, ST the input's (slot 1), RGBA its slot 2 by `ftoi0`.
+- **Fog in w.** The rows' w times 1014.z, row 3's (1011.w kz) - 1014.w kz: F = the sum, no more than 255, no less than
+  0.
+- **Facing.** As the characters' variant: the z of each new triangle's edge cross product (the strip's winding taken
+  into account) against 1023.z, ADC (2048 added to w before `ftoi4`, bit 15) where they differ.
+- **Two passes.** It ends in the subroutine set `0x599510`'s 657 uses (`0x30d8` here, `0x3bb8` there, instruction for
+  instruction): the register packet at 959, the strip, the one at 956, the strip again with the environment map from
+  the normals (963-966; Q 1). The native module's two-pass kind draws it, with the matrix's w row (0, 0, 0, 1).
+
+Verify (`SHINO_NATIVE_3D=verify`): every packet of both strips identical, field by field: 2,495 batches (140,718
+vertices) in the town, 60 in the final fight. A capture of the town: 0.06% of the pixels differ from the GS path's (at
+edges); the needle in its ring in 4:3 and 16:9. The replay (Stage 1d) has no variant left to replay. What is left on
+the GS translator: the screen clears.
+
 
 ## Widescreen (2026-11-27)
 
