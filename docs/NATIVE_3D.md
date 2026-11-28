@@ -443,8 +443,21 @@ pictures stay 4:3. `SHINO_TRACE_FOV` prints each camera's tangent, `SHINO_TRACE_
 
 Checked (`SHINO_WIDESCREEN=1`, captures): the town, a mission, the Hideout and the final fight fill the screen's sides
 (the ground at the bottom corners, the walls), the radar's needle centred in its ring (the town, a mission, the final
-fight); 4:3 is unchanged (the same picture, byte for byte). Left: the 2D the GS packets draw (the Hideout's dialogs,
-the menus over a 3D scene) is shown stretched in a 16:9 frame (only the HUD's program, `0x4f3f60`, is narrowed).
+fight); 4:3 is unchanged (the same picture, byte for byte).
+
+**The 2D in a 16:9 frame.** All of it but the screen clears (VIF1 DIRECT sprites) is the HUD's program, `0x4f3f60`:
+the HUD, the pause menu, the Hideout's help pages (each one full-screen picture: its text, portrait and menu in one
+texture). `gs::screenPrimitives` narrows each primitive by its bounds, which a quad's two triangles share (by its
+triangle's centre, a quad could be torn in two: the town's vignette was, and the help pages):
+- across the whole screen, textured, opaque and not a frame buffer: a picture, 3/4 as wide in the middle (in
+  proportion), black sprites at the sides where it no longer reaches (in 4:3 it hides the scene);
+- across the whole screen otherwise (a tint, the pause menu's dimming), or at least half the screen's width from a
+  side (the vignette's quarters): a layer over the screen, stretched across it as drawn;
+- the others 3/4 as wide towards their third of the screen (the left edge, the centre, the right edge).
+
+Checked: the Hideout's help page (in proportion, black at the sides, the scene no longer showing there), the pause
+menu over the town (the dimming across the screen, the menu in proportion), the town's HUD; 4:3 unchanged byte for
+byte.
 
 ## The plan
 

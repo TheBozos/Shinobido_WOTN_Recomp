@@ -1146,8 +1146,14 @@ namespace shino::gs
         const Context &c = g_s.ctx[(attrs >> 9) & 1u];
         const uint32_t type = attrs & 7u;
         static const uint32_t need[8] = {1, 2, 2, 3, 3, 3, 2, 1};
-        // widescreen: the HUD's triangles 3/4 as wide towards their side; the particles already drawn for 16:9 by the game
+        // Widescreen: the HUD's primitives 3/4 as wide (narrow); the particles already drawn for 16:9 by the game. Each
+        // primitive by its bounds (a quad's two triangles share them, so a quad is never torn): one across the whole
+        // screen is a picture (textured, opaque, not a frame buffer: the Hideout's help pages) kept in proportion in the
+        // middle with black at the sides, or a layer over the screen (a tint, a fade, a vignette) stretched across it, as
+        // is a large one at a side (the vignette's quarters); the others 3/4 as wide towards their third of the screen.
         const float width = frameWidth(c);
+        const uint32_t tbp = static_cast<uint32_t>(c.tex0 & 0x3FFFu);
+        const bool fromFrame = tbp == (c.frame & 0x1FFu) * 32u || tbp == g_displayFbp * 32u;
         const bool narrow = narrowing() && width > 0.0f && place == Place::Hud;
         GsVertex g[3];
         for (uint32_t i = 0; i + need[type] <= count; i += need[type])
@@ -1167,12 +1173,35 @@ namespace shino::gs
             }
             if (narrow)
             {
-                float centre = 0.0f;
+                float x0 = g[0].x, x1 = g[0].x, y0 = g[0].y, y1 = g[0].y;
+                uint32_t alpha = 0xFFu;
                 for (uint32_t j = 0; j < need[type]; ++j)
-                    centre += g[j].x;
-                const float anchor = anchorFor(centre / float(need[type]), width);
-                for (uint32_t j = 0; j < need[type]; ++j)
-                    g[j].x = anchor + (g[j].x - anchor) * kWide;
+                {
+                    x0 = std::min(x0, g[j].x), x1 = std::max(x1, g[j].x);
+                    y0 = std::min(y0, g[j].y), y1 = std::max(y1, g[j].y);
+                    alpha = std::min(alpha, g[j].rgba >> 24);
+                }
+                const bool left = x0 <= width * 0.02f, right = x1 >= width * 0.98f;
+                const bool picture = left && right && ((attrs >> 4) & 1u) && alpha >= 0x80u && !fromFrame;
+                if (picture || !((left && right) || ((left || right) && x1 - x0 >= width * 0.5f)))
+                {
+                    const float anchor = picture ? width * 0.5f : anchorFor((x0 + x1) * 0.5f, width);
+                    for (uint32_t j = 0; j < need[type]; ++j)
+                        g[j].x = anchor + (g[j].x - anchor) * kWide;
+                    if (picture) // black where the picture no longer reaches
+                    {
+                        const uint64_t plain = (attrs & ~0x1FFull) | 6u; // a sprite, flat, untextured, unblended
+                        const float side = width * (1.0f - kWide) * 0.5f;
+                        for (const float from : {0.0f, width - side})
+                        {
+                            GsVertex b[2] = {g[0], g[0]};
+                            b[0].x = from, b[1].x = from + side, b[0].y = y0, b[1].y = y1;
+                            b[0].rgba = b[1].rgba = 0x80000000u;
+                            if (!vertices[i + need[type] - 1].adc)
+                                emit(b, 2, 6, plain);
+                        }
+                    }
+                }
             }
             if (!vertices[i + need[type] - 1].adc)
                 emit(g, need[type], type, attrs);
